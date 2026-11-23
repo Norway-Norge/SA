@@ -1,0 +1,6 @@
+FROM python:3.11-slim
+
+COPY pyproject.toml /tmp/sa-pyproject.toml
+RUN python -c "import subprocess, sys, tomllib; p = tomllib.load(open('/tmp/sa-pyproject.toml', 'rb')); subprocess.check_call([sys.executable, '-m', 'pip', 'install', '--no-cache-dir', *p['project']['dependencies'], 'httpx', 'pytest>=8,<10'])"
+
+WORKDIR /workspace

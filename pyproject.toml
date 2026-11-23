@@ -1,0 +1,15 @@
+[project]
+name = "secureagent-harness"
+version = "0.1.0"
+description = "A security-focused agent harness"
+readme = "README.md"
+requires-python = ">=3.10"
+dependencies = [
+    "fastapi>=0.162.5",
+    "langgraph>=1.2.14,<2",
+    "openai>=2.30,<4",
+    "python-cordis==0.1.4",
+    "python-dotenv>=1,<2",
+    "pyyaml>=6,<7",
+    "uvicorn[standard]>=0.54.0",
+]
