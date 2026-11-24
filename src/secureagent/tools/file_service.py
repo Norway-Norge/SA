@@ -10,7 +10,7 @@ from pathlib import Path
 from typing import Callable, ContextManager, Iterator, Protocol
 
 from secureagent.security.observations import ReadObservation, file_identity
-from secureagent.security.workspace import Workspace
+from secureagent.security.workspace import Workspace, WorkspaceError
 from secureagent.tools.file_backend import (MAX_CREATE_BYTES, create_workspace_file,
     file_version, open_workspace_file, replace_workspace_file, write_lock)
 
@@ -46,7 +46,7 @@ class FileSystem(Protocol):
     def resolve(self, path: str) -> FileTarget: ...
     def open_read(self, path: str) -> ContextManager[ReadStream]: ...
     def create_file(self, path: str, content: bytes) -> dict: ...
-    def read_observed(self, target: FileTarget, version: object) -> bytes | None: ...
+    def read_observed(self, target: FileTarget, version: object, *, max_bytes: int | None = None) -> bytes | None: ...
     def current_version(self, target: FileTarget) -> object | None: ...
     def replace_observed(self, path: str, target: FileTarget, version: object,
                          content: bytes, kind: str,
@@ -83,16 +83,16 @@ def local_observation_parts(observation: ReadObservation) -> tuple[str, tuple[in
     return version.digest, version.identity
 
 
-def observed_bytes(target: Path, observation: ReadObservation) -> bytes | None:
+def observed_bytes(target: Path, observation: ReadObservation, *, max_bytes: int | None = MAX_CREATE_BYTES) -> bytes | None:
     expected = local_observation_parts(observation)
     if expected is None:
         return None
     with target.open("rb") as stream:
         if file_identity(os.fstat(stream.fileno())) != expected[1]:
             return None
-        raw = stream.read(MAX_CREATE_BYTES + 1)
+        raw = stream.read() if max_bytes is None else stream.read(max_bytes + 1)
         after = file_identity(os.fstat(stream.fileno()))
-    if (len(raw) > MAX_CREATE_BYTES or after != expected[1]
+    if ((max_bytes is not None and len(raw) > max_bytes) or after != expected[1]
             or file_identity(target.stat()) != after
             or hashlib.sha256(raw).hexdigest() != expected[0]):
         return None
@@ -100,8 +100,11 @@ def observed_bytes(target: Path, observation: ReadObservation) -> bytes | None:
 
 
 class LocalFileSystem:
-    def __init__(self, workspace: Workspace):
-        self.workspace = workspace
+    """Host filesystem operations; access is subject to OS process permissions."""
+
+    def __init__(self, workspace: Workspace | Path):
+        base = workspace.root if isinstance(workspace, Workspace) else Path(workspace)
+        self.workspace = _LocalPaths(base)
 
     def resolve(self, path: str) -> FileTarget:
         target = self.workspace.resolve(path)
@@ -119,24 +122,22 @@ class LocalFileSystem:
         return Path(target.key)
 
     def current_version(self, target: FileTarget) -> object | None:
-        version = file_version(self._path(target))
+        version = file_version(self._path(target), max_bytes=None)
         return LocalVersion(*version) if version is not None else None
 
-    def read_observed(self, target: FileTarget, version: object) -> bytes | None:
+    def read_observed(self, target: FileTarget, version: object, *, max_bytes: int | None = None) -> bytes | None:
         if not isinstance(version, LocalVersion):
             return None
         observation = ReadObservation(target.key, version, version.identity[2], 1, 0, 0, True)
-        return observed_bytes(self._path(target), observation)
+        return observed_bytes(self._path(target), observation, max_bytes=max_bytes)
 
     def replace_observed(self, path: str, target: FileTarget, version: object,
                          content: bytes, kind: str,
                          check: Callable[[], tuple[bool, str]] | None = None) -> dict:
-        if kind not in {"write", "edit"} or len(content) > MAX_CREATE_BYTES:
+        if kind not in {"write", "edit"}:
             raise ValueError("文件操作或内容无效")
         if not isinstance(version, LocalVersion):
             return {"code": "STALE_VERSION", "error": "文件版本不属于此提供方"}
-        if kind == "write" and version.identity[2] != 0:
-            return {"code": "REVIEW_REQUIRED", "error": "非空文件写入需要审批"}
         with write_lock:
             if self.resolve(path) != target or self.current_version(target) != version:
                 return {"code": "STALE_VERSION", "error": "文件已变化，请重新读取"}
@@ -175,3 +176,38 @@ class LocalFileSystem:
                 if result is not None:
                     result["warning"] = "临时文件清理未确认"
         return result
+
+
+class _LocalPaths:
+    """Local path resolution without a workspace access policy."""
+
+    def __init__(self, root: Path):
+        self.root = root.resolve(strict=True)
+
+    def _candidate(self, value: str) -> Path:
+        if not isinstance(value, str) or not value or "\x00" in value:
+            raise WorkspaceError("路径无效")
+        path = Path(value)
+        return path if path.is_absolute() else self.root / path
+
+    def resolve(self, value: str, *, directory: bool = False) -> Path:
+        try:
+            target = self._candidate(value).resolve(strict=True)
+        except (OSError, RuntimeError, ValueError) as exc:
+            raise WorkspaceError("路径不存在") from exc
+        if directory and not target.is_dir():
+            raise WorkspaceError("目标不是目录")
+        if not directory and not target.is_file():
+            raise WorkspaceError("目标不是文件")
+        return target
+
+    def resolve_new_file(self, value: str, *, allow_missing_parents: bool = False) -> Path:
+        try:
+            target = self._candidate(value).resolve(strict=False)
+        except (OSError, RuntimeError, ValueError) as exc:
+            raise WorkspaceError("路径无效") from exc
+        if os.path.lexists(target):
+            raise WorkspaceError("目标已存在")
+        if not allow_missing_parents and not target.parent.is_dir():
+            raise WorkspaceError("父目录不存在")
+        return target

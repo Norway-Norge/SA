@@ -16,6 +16,7 @@ from secureagent.security.workspace import (
     is_sensitive_component,
 )
 from secureagent.security.observations import ReadObservation
+from secureagent.security.file_access import RestrictedFileSystem
 from secureagent.tools.file_service import FileSystem, LocalFileSystem
 
 MAX_FILE_BYTES = 256 * 1024
@@ -127,7 +128,7 @@ def read_file(workspace: Workspace, path: str, offset: int = 1,
         return {"error": f"limit 必须是 1 到 {MAX_READ_LINES} 之间的整数"}
 
     decoder = codecs.getincrementaldecoder("utf-8")("strict")
-    fs = file_system if file_system is not None else LocalFileSystem(workspace)
+    fs = file_system if file_system is not None else RestrictedFileSystem(workspace, LocalFileSystem(workspace.root))
     lines: list[dict] = []
     output_bytes = 0
     total_lines = 0

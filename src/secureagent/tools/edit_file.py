@@ -1,6 +1,7 @@
 """Literal edits are proposed first, then committed after a bound approval."""
 
 from secureagent.security.edit_approvals import EditApprovals, PendingEdit
+from secureagent.security.file_access import RestrictedFileSystem
 from secureagent.security.observations import ObservationStore
 from secureagent.security.policy import Policy
 from secureagent.tools.create_file import MAX_CREATE_BYTES
@@ -42,7 +43,8 @@ def _edit(raw: bytes, old: str, new: str, replace_all: bool) -> tuple[bytes | No
 def propose_edit(policy: Policy, observations: ObservationStore, approvals: EditApprovals,
                  path: str, old_string: str, new_string: str, replace_all: bool = False,
                  *, file_system: FileSystem | None = None) -> dict:
-    fs = file_system if file_system is not None else LocalFileSystem(policy.workspace)
+    fs = file_system if file_system is not None else RestrictedFileSystem(
+        policy.workspace, LocalFileSystem(policy.workspace.root))
     allowed, reason = policy.authorize("edit_file", {"path": path})
     if not allowed:
         return {"code": "DENIED", "error": reason}
@@ -77,7 +79,8 @@ def propose_edit(policy: Policy, observations: ObservationStore, approvals: Edit
 
 def decide_edit(policy: Policy, observations: ObservationStore, approvals: EditApprovals,
                 approval_id: str, approve: bool, *, file_system: FileSystem | None = None) -> dict:
-    fs = file_system if file_system is not None else LocalFileSystem(policy.workspace)
+    fs = file_system if file_system is not None else RestrictedFileSystem(
+        policy.workspace, LocalFileSystem(policy.workspace.root))
     pending = approvals.take(approval_id)
     if pending is None:
         return {"error": "审批不存在、已处理、已过期或不属于当前会话", "code": "INVALID_APPROVAL"}

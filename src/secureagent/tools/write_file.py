@@ -1,6 +1,7 @@
 """Replace an observed existing file using a guarded local commit."""
 
 from secureagent.security.observations import ObservationStore
+from secureagent.security.file_access import RestrictedFileSystem
 from secureagent.security.workspace import Workspace
 from secureagent.tools.create_file import MAX_CREATE_BYTES
 from secureagent.tools.file_service import FileSystem, LocalFileSystem
@@ -8,7 +9,7 @@ from secureagent.tools.file_service import FileSystem, LocalFileSystem
 
 def write_file(workspace: Workspace, observations: ObservationStore, path: str, content: str,
                *, file_system: FileSystem | None = None) -> dict:
-    fs = file_system if file_system is not None else LocalFileSystem(workspace)
+    fs = file_system if file_system is not None else RestrictedFileSystem(workspace, LocalFileSystem(workspace.root))
     data = content.encode("utf-8")
     if len(data) > MAX_CREATE_BYTES:
         return {"error": "文件内容超过大小限制"}

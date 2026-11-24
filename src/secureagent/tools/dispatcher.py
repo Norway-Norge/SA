@@ -11,6 +11,7 @@ from secureagent.tools.filesystem import validate_glob_pattern
 from secureagent.tools.edit_file import decide_edit
 from secureagent.tools.file_tools import register_file_read_tools, register_file_glob_tool, register_file_write_tools
 from secureagent.tools.file_service import LocalFileSystem
+from secureagent.security.file_access import RestrictedFileSystem
 from secureagent.tools.registry import ToolDefinition, ToolRegistry
 from secureagent.tools.web_search import DeepSeekSearchProvider, enabled as web_search_enabled, web_search
 from secureagent.tools.web_fetch import DeepSeekFetchProvider, enabled as web_fetch_enabled, web_fetch
@@ -44,7 +45,8 @@ class Dispatcher:
         if registry is None:
             self.registry.register(READ_SPILL, lambda args: self.spills.read(args["spill_id"], args.get("offset", 0), args.get("limit", 6000)))
             self.registry.register(SKILL, lambda args: load_skill(policy.workspace, args["name"], user_home=Path.home()))
-            self.plugin_runtime.context.register("fs", LocalFileSystem(policy.workspace))
+            self.plugin_runtime.context.register("fs", RestrictedFileSystem(
+                policy.workspace, LocalFileSystem(policy.workspace.root)))
             def register_files(scope, ctx):
                 file_system = ctx.fs
                 self._decide_edit = scope.guard(lambda approval_id, approve: decide_edit(

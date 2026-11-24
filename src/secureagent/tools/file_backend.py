@@ -16,16 +16,16 @@ MAX_CREATE_BYTES = 256 * 1024
 write_lock = threading.RLock()
 
 
-def file_version(target: Path) -> tuple[str, tuple[int, int, int, int, int]] | None:
+def file_version(target: Path, max_bytes: int | None = MAX_CREATE_BYTES) -> tuple[str, tuple[int, int, int, int, int]] | None:
     digest = hashlib.sha256()
     with target.open("rb") as stream:
         first_stat = os.fstat(stream.fileno())
-        if first_stat.st_size > MAX_CREATE_BYTES:
+        if max_bytes is not None and first_stat.st_size > max_bytes:
             return None
         before = file_identity(first_stat)
         for chunk in iter(lambda: stream.read(64 * 1024), b""):
             digest.update(chunk)
-            if stream.tell() > MAX_CREATE_BYTES:
+            if max_bytes is not None and stream.tell() > max_bytes:
                 return None
         after = file_identity(os.fstat(stream.fileno()))
     if before != after or file_identity(target.stat()) != after:
@@ -64,9 +64,10 @@ def create_workspace_file(workspace: Workspace, path: str, content: bytes) -> di
     """
     workspace.resolve_new_file(path, allow_missing_parents=True)
     parent = Path(path).parent
-    current = Path(".")
+    current = Path(parent.anchor) if parent.is_absolute() else Path(".")
+    parts = parent.parts[1:] if parent.is_absolute() else parent.parts
     created_directories = []
-    for component in parent.parts:
+    for component in parts:
         checked_parent = workspace.resolve(str(current), directory=True)
         current = current / component
         candidate = checked_parent / component
