@@ -1,5 +1,13 @@
 """Session-scoped storage for complete, oversized tool results."""
 
+from secureagent.tools.spec import spec
+
+READ_SPILL = spec("read_spill", "分页读取当前会话保留的完整工具结果，offset 从 0 开始。",
+                  {"spill_id": {"type": "string", "description": "工具结果返回的 spill_id。"},
+                   "offset": {"type": "integer", "minimum": 0, "description": "起始字符偏移，默认 0。"},
+                   "limit": {"type": "integer", "minimum": 1, "maximum": 6000, "description": "返回字符数，默认 6000；转义后的输出过大时会进一步缩小。"}}, ["spill_id"])
+
+
 import hashlib
 import json
 import os

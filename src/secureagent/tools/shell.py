@@ -1,5 +1,12 @@
 """Optional, narrowly scoped test execution in a pre-existing Docker image."""
 
+from secureagent.tools.spec import PATH, spec
+
+TESTS = spec("run_tests", "在会话专属隔离容器中运行 Python 测试；使用首次运行时的工作区快照，之后宿主文件更改不会同步。",
+             {"path": PATH, "runner": {"type": "string", "enum": ["unittest", "pytest"]}},
+             ["path", "runner"])
+
+
 import subprocess
 import shutil
 import tempfile

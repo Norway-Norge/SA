@@ -1,5 +1,12 @@
 """Replace an observed existing file using a guarded local commit."""
 
+from secureagent.tools.spec import PATH, spec
+
+WRITE = spec("write_file", "写入工作区内已有的空 UTF-8 文本文件。必须在当前会话先完整读取；非空文件待审批功能实现后再开放。",
+             {"path": PATH, "content": {"type": "string", "description": "替换后的完整 UTF-8 文本。"}},
+             ["path", "content"])
+
+
 from secureagent.security.observations import ObservationStore
 from secureagent.security.file_access import RestrictedFileSystem
 from secureagent.security.workspace import Workspace

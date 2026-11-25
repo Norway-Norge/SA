@@ -2,28 +2,44 @@
 
 import json
 import logging
+from contextlib import nullcontext
 from pathlib import Path
 
 from secureagent.security.policy import Policy
-from secureagent.security.observations import ObservationStore, current_session
+from secureagent.security.workspace import WorkspaceError
+from secureagent.security.observations import ObservationStore
 from secureagent.security.edit_approvals import EditApprovals
-from secureagent.tools.filesystem import validate_glob_pattern
+from secureagent.tools.glob import validate_glob_pattern
 from secureagent.tools.edit_file import decide_edit
-from secureagent.tools.file_tools import register_file_read_tools, register_file_glob_tool, register_file_write_tools
 from secureagent.tools.file_service import LocalFileSystem
-from secureagent.security.file_access import RestrictedFileSystem
 from secureagent.tools.registry import ToolDefinition, ToolRegistry
-from secureagent.tools.web_search import DeepSeekSearchProvider, enabled as web_search_enabled, web_search
-from secureagent.tools.web_fetch import DeepSeekFetchProvider, enabled as web_fetch_enabled, web_fetch
-from secureagent.skills import discover_skills, load_skill
-from secureagent.tools.spill import SpillStore
-from secureagent.tools.shell import run_tests, StatefulTestSandboxes
-from secureagent.tools.inline_tests import run_inline_tests
-from secureagent.plugins.safe_delete import SafeDeletePlugin
+from secureagent.tools.web_search import enabled as web_search_enabled
+from secureagent.tools.web_fetch import enabled as web_fetch_enabled
+from secureagent.tools.shell import StatefulTestSandboxes
+from secureagent.plugins.tools import (read_file, search_files, glob, create_file, write_file, edit_file,
+    safe_delete, list_recycle_bin, restore_file, convert_file, read_spill, skill, web_search, web_fetch,
+    run_tests, run_inline_tests)
+from secureagent.tools.safe_delete import SafeDeleteOperations
 from secureagent.plugins.runtime import TrustedPluginRuntime
-from secureagent.tools.spec import WEB_SEARCH, WEB_FETCH, SKILL, READ_SPILL, TESTS, INLINE_TESTS
+from secureagent.plugins.filesystem_service import FileSystemService
+from secureagent.plugins.filesystem_composition import FileSystemComposition
+from secureagent.plugins.registry import PluginService
+from secureagent.plugins.turn_events import TurnEventService
+from secureagent.plugins.persona_service import PersonaService
+from secureagent.plugins.system_prompt_service import SystemPromptService
+from secureagent.plugins.web_service import WebService
+from secureagent.plugins.skill_service import SkillService
+from secureagent.plugins.spill_service import SpillService
+from secureagent.plugins.test_runner_service import TestRunnerService
+from secureagent.plugins.file_search_service import FileSearchService
+from secureagent.plugins.recycle_service import RecycleService
+from secureagent.plugins.providers import deepseek_search, deepseek_fetch, local_skills, local_spill, local_filesystem, local_file_search, local_recycle, docker_tests
+from secureagent.plugins.bootstrap import install_default_plugins
 
 log = logging.getLogger("secureagent.audit")
+FILESYSTEM_BOUND_TOOLS = frozenset({"read_file", "create_file", "write_file", "edit_file",
+                                    "safe_delete", "restore_file", "convert_file"})
+RECYCLE_TOOLS = frozenset({"safe_delete", "restore_file", "convert_file"})
 
 
 class Dispatcher:
@@ -34,44 +50,87 @@ class Dispatcher:
         self.edit_approvals = EditApprovals()
         self.sandbox_image = sandbox_image
         self.sandboxes = StatefulTestSandboxes(policy.workspace, sandbox_image, cache_dir=cache_dir) if sandbox_image else None
-        self.registry = registry or ToolRegistry()
-        self.spills = SpillStore(policy.workspace)
+        tool_registry = registry if registry is not None else ToolRegistry()
         self.safe_delete = None
-        self.plugin_runtime = TrustedPluginRuntime(self.registry, policy)
+        self.plugin_runtime = TrustedPluginRuntime(tool_registry, policy)
+        self.registry = self.plugin_runtime.registry
+        self.turn_events = TurnEventService(self.plugin_runtime.context)
+        self.personas = PersonaService(self.plugin_runtime.context)
+        self.system_prompt = SystemPromptService(self.plugin_runtime.context)
+        self.web = WebService(self.plugin_runtime.context)
+        self.skills = SkillService(self.plugin_runtime.context)
+        self.spills = SpillService(self.plugin_runtime.context)
+        self.test_runner = TestRunnerService(self.plugin_runtime.context)
+        self.file_search = FileSearchService(self.plugin_runtime.context)
+        self.recycle = RecycleService(self.plugin_runtime.context)
+        self.system_prompt.section("persona", lambda _: (self.personas.current() or (None, ""))[1], order=1000)
+        self.plugins = PluginService(self.plugin_runtime)
+        install_default_plugins(self.plugins)
         self.unload_safe_delete = None
         self.unload_file_tools = None
         self._decide_edit = lambda approval_id, approve: decide_edit(
             self.policy, self.observations, self.edit_approvals, approval_id, approve)
         if registry is None:
-            self.registry.register(READ_SPILL, lambda args: self.spills.read(args["spill_id"], args.get("offset", 0), args.get("limit", 6000)))
-            self.registry.register(SKILL, lambda args: load_skill(policy.workspace, args["name"], user_home=Path.home()))
-            self.plugin_runtime.context.register("fs", RestrictedFileSystem(
-                policy.workspace, LocalFileSystem(policy.workspace.root)))
-            def register_files(scope, ctx):
-                file_system = ctx.fs
-                self._decide_edit = scope.guard(lambda approval_id, approve: decide_edit(
-                    self.policy, self.observations, self.edit_approvals, approval_id, approve, file_system=file_system))
-                register_file_read_tools(scope, policy, self.observations, self.spills, file_system)
-                register_file_glob_tool(scope, policy, self.spills)
-                register_file_write_tools(scope, policy, self.observations, lambda: self.edit_approvals, file_system)
-            self.unload_file_tools = self.plugin_runtime.mount(register_files, dependencies=("fs",), with_context=True)
+            self.plugins.register_tool("spill-provider-local", local_spill.installer(policy.workspace), dependencies=("spillStore",))
+            self.plugins.register_tool("read-spill", read_spill.install, dependencies=("spillStore",))
+            self.plugins.register_tool("skills-provider-local", local_skills.installer(policy.workspace), dependencies=("skills",))
+            self.plugins.register_tool("skill", skill.install, dependencies=("skills",))
+            self.file_system_service = FileSystemService(self.plugin_runtime.context, policy.workspace,
+                                                         on_change=self._invalidate_filesystem_state)
+            self.recycle.file_system = self.file_system_service
+            self.filesystem_plugins = FileSystemComposition(self.plugins, self.file_system_service)
+            self.filesystem_plugins.register_factory("fs-provider-local", local_filesystem.installer(policy.workspace))
+            self.filesystem_plugins.reload_from_environment()
+            self.plugins.register_tool("file-search-provider-local", local_file_search.installer(policy.workspace, self.spills), dependencies=("fileSearch",))
+            file_plugins = [
+                ("read-file", read_file.installer(policy, self.observations), ("fs", "systemPrompt")),
+                ("search-files", search_files.install, ("fileSearch",)),
+                ("glob", glob.install, ("fileSearch",)),
+                ("create-file", create_file.installer(policy), ("fs",)),
+                ("write-file", write_file.installer(policy, self.observations), ("fs",)),
+                ("edit-file", edit_file.installer(policy, self.observations, lambda: self.edit_approvals,
+                    lambda: self.policy, lambda decide: setattr(self, "_decide_edit", decide)), ("fs",)),
+            ]
+            file_disposers = []
+            try:
+                for plugin_name, install, dependencies in file_plugins:
+                    file_disposers.append(self.plugins.register_tool(plugin_name, install, dependencies=dependencies))
+            except BaseException:
+                for dispose in reversed(file_disposers):
+                    dispose()
+                raise
+            def unload_file_tools():
+                for dispose in reversed(file_disposers):
+                    dispose()
+            self.unload_file_tools = unload_file_tools
             if web_search_enabled():
-                provider = DeepSeekSearchProvider()
-                self.registry.register(WEB_SEARCH, lambda args: web_search(args["query"], provider))
+                self.plugins.register_tool("web-search-provider-deepseek", deepseek_search.install, dependencies=("web",))
+                self.plugins.register_tool("web-search", web_search.install, dependencies=("web",))
             if web_fetch_enabled():
-                fetch_provider = DeepSeekFetchProvider()
-                self.registry.register(WEB_FETCH, lambda args: web_fetch(args["url"], fetch_provider))
-            self.safe_delete = SafeDeletePlugin(policy, self.observations)
-            def register_safe_delete(scope):
-                self.safe_delete.decide = scope.guard(self.safe_delete.decide)
-                self.safe_delete.register(scope, scope)
-            self.unload_safe_delete = self.plugin_runtime.mount(register_safe_delete)
+                self.plugins.register_tool("web-fetch-provider-deepseek", deepseek_fetch.install, dependencies=("web",))
+                self.plugins.register_tool("web-fetch", web_fetch.install, dependencies=("web",))
+            self.recycle_backend = SafeDeleteOperations(policy, self.observations)
+            self.plugins.register_tool("recycle-provider-local", local_recycle.installer(self.recycle_backend), dependencies=("recycle",))
+            self.safe_delete = self.recycle
+            recycle_plugins = (("safe-delete", safe_delete), ("list-recycle-bin", list_recycle_bin),
+                               ("restore-file", restore_file), ("convert-file", convert_file))
+            recycle_disposers = []
+            try:
+                for plugin_name, module in recycle_plugins:
+                    recycle_disposers.append(self.plugins.register_tool(plugin_name, module.installer(self.safe_delete)))
+            except BaseException:
+                for dispose in reversed(recycle_disposers):
+                    dispose()
+                raise
+            def unload_safe_delete():
+                for dispose in reversed(recycle_disposers):
+                    dispose()
+            self.unload_safe_delete = unload_safe_delete
             if sandbox_image:
-                self.registry.register(INLINE_TESTS, lambda args: run_inline_tests(
-                    args["code"], args["tests"], sandbox_image))
-                self.registry.register(TESTS, lambda args: run_tests(
-                    policy.workspace, args["path"], args["runner"], sandbox_image) if current_session() is None else
-                    self.sandboxes.run(current_session(), args["path"], args["runner"]))
+                self.plugins.register_tool("tests-provider-docker", docker_tests.installer(
+                    policy.workspace, sandbox_image, self.sandboxes), dependencies=("testRunner",))
+                self.plugins.register_tool("run-inline-tests", run_inline_tests.install, dependencies=("testRunner",))
+                self.plugins.register_tool("run-tests", run_tests.install, dependencies=("testRunner",))
 
     @property
     def schemas(self) -> list[dict]:
@@ -82,10 +141,22 @@ class Dispatcher:
         return self.registry.snapshot()
 
     def skill_catalog(self) -> dict:
-        return discover_skills(self.policy.workspace, user_home=Path.home())
+        return self.skills.list()
+
+    def _invalidate_filesystem_state(self):
+        self.observations.invalidate_all()
+        self.edit_approvals.invalidate_pending()
+        recycle_backend = getattr(self, "recycle_backend", None)
+        if recycle_backend is not None:
+            recycle_backend.discard_pending()
 
     def decide_edit(self, approval_id: str, approve: bool) -> dict:
-        return self._decide_edit(approval_id, approve)
+        fs = getattr(self, "file_system_service", None)
+        try:
+            with fs.operation() if fs is not None else nullcontext():
+                return self._decide_edit(approval_id, approve)
+        except WorkspaceError:
+            return {"error": "文件系统 provider 不可用", "code": "FS_PROVIDER_UNAVAILABLE"}
 
     def execute(self, call: dict, *, expected: ToolDefinition | None = None, check_expected: bool = False) -> dict:
         call_id = call.get("id", "")
@@ -134,7 +205,11 @@ class Dispatcher:
             if not allowed:
                 result = {"error": reason}
             else:
-                result = tool.handler(args)
+                fs = getattr(self, "file_system_service", None)
+                with fs.operation() if fs is not None and name in FILESYSTEM_BOUND_TOOLS else nullcontext() as backend:
+                    if name in RECYCLE_TOOLS and fs is not None and not isinstance(backend.provider, LocalFileSystem):
+                        raise WorkspaceError("当前文件系统 provider 不支持本地回收操作")
+                    result = tool.handler(args)
         except (ValueError, TypeError, OSError) as exc:
             log.info("call_id=%r tool=%r decision=DENY", str(call_id)[:100], str(name)[:100])
             result = {"error": "工具请求无效或执行失败", "detail": str(exc) if isinstance(exc, ValueError) else "操作失败"}

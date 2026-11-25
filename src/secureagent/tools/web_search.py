@@ -1,5 +1,11 @@
 """Bounded web search through the DeepSeek Search API."""
 
+from secureagent.tools.spec import spec
+
+WEB_SEARCH = spec("web_search", "搜索互联网，返回外部来源链接与摘要，不读取网页全文。",
+                  {"query": {"type": "string", "description": "非空搜索词，最多 500 字符。"}}, ["query"])
+
+
 import json
 import os
 import socket

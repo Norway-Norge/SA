@@ -1,0 +1,1 @@
+"""Trusted capability provider plugins."""

@@ -9,3 +9,4 @@ class AgentState(TypedDict):
     calls: int
     stop_reason: str
     tool_snapshot: Any
+    observers: Any

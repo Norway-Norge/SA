@@ -1,5 +1,12 @@
 """Create-only file tool; authorization is enforced by the dispatcher."""
 
+from secureagent.tools.spec import PATH, spec
+
+CREATE = spec("create_file", "在工作区内创建新的 UTF-8 文本文件；不覆盖现有文件。缺失的父目录会自动创建。",
+              {"path": PATH, "content": {"type": "string", "description": "新文件完整文本。"}},
+              ["path", "content"])
+
+
 from secureagent.security.workspace import Workspace
 from secureagent.tools.file_backend import MAX_CREATE_BYTES, create_workspace_file
 from secureagent.tools.file_service import FileSystem

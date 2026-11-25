@@ -42,6 +42,10 @@ class EditApprovals:
                                                      observation, now + self._ttl)
             return approval_id
 
+    def invalidate_pending(self) -> None:
+        with self._lock:
+            self._pending.clear()
+
     def take(self, approval_id: str) -> PendingEdit | None:
         session = current_session()
         with self._lock:

@@ -1,5 +1,12 @@
 """Literal edits are proposed first, then committed after a bound approval."""
 
+from secureagent.tools.spec import PATH, spec
+
+EDIT = spec("edit_file", "在已完整读取的文件中精确替换文字。提交后必须等待用户审批。默认要求原文只匹配一次。",
+            {"path": PATH, "old_string": {"type": "string"}, "new_string": {"type": "string"},
+             "replace_all": {"type": "boolean"}}, ["path", "old_string", "new_string"])
+
+
 from secureagent.security.edit_approvals import EditApprovals, PendingEdit
 from secureagent.security.file_access import RestrictedFileSystem
 from secureagent.security.observations import ObservationStore

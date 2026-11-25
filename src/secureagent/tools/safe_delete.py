@@ -1,4 +1,4 @@
-"""Explicitly registered trusted plugin for reviewed, recoverable file removal."""
+"""Reviewed, recoverable file operations and their tool descriptions."""
 
 import json
 import hashlib
@@ -32,24 +32,37 @@ CONVERT = spec("convert_file", "将已完整读取的文件转换到新的路径
                ["source_path", "target_path", "content"])
 
 
-class SafeDeletePlugin:
+class SafeDeleteOperations:
     def __init__(self, policy, observations):
         self.policy = policy
         self.observations = observations
         self._lock = threading.RLock()
         self._pending = {}
         self._results = {}
+        self._decision_handlers = {}
 
-    def register(self, registry, rules=None):
-        rules = rules or self.policy
-        rules.register_rule("safe_delete", lambda a: self._resolve_target(a["path"]), writes=True)
-        rules.register_rule("list_recycle_bin", lambda a: None)
-        rules.register_rule("restore_file", lambda a: self._valid_id(a["recycle_id"]), writes=True)
-        rules.register_rule("convert_file", self._authorize_convert, writes=True)
-        registry.register(DELETE, lambda a: self.propose_delete(a["path"]))
-        registry.register(LIST, lambda a: self.list_items())
-        registry.register(RESTORE, lambda a: self.propose_restore(a["recycle_id"]))
-        registry.register(CONVERT, lambda a: self.propose_convert(a["source_path"], a["target_path"], a["content"]))
+    def discard_pending(self):
+        with self._lock:
+            self._pending.clear()
+
+    def bind_decisions(self, actions, handler):
+        token = object()
+        with self._lock:
+            if any(action in self._decision_handlers for action in actions):
+                raise ValueError("审批处理器已注册")
+            for action in actions:
+                self._decision_handlers[action] = (token, handler)
+
+        def dispose():
+            with self._lock:
+                removed = set()
+                for action in actions:
+                    if self._decision_handlers.get(action, (None,))[0] is token:
+                        del self._decision_handlers[action]
+                        removed.add(action)
+                self._pending = {key: value for key, value in self._pending.items()
+                                 if value["action"] not in removed}
+        return dispose
 
     def _authorize_convert(self, args):
         self.policy.workspace.resolve(args["source_path"])
@@ -318,6 +331,14 @@ class SafeDeletePlugin:
         return self._propose("restore", record["path"], version[0], version[1], recycle_id)
 
     def decide(self, approval_id, approve):
+        with self._lock:
+            item = self._pending.get(approval_id)
+            entry = self._decision_handlers.get(item["action"]) if item else None
+        if entry is None:
+            return {"code": "INVALID_APPROVAL", "error": "审批不存在或对应工具已卸载"}
+        return entry[1](approval_id, approve)
+
+    def _decide(self, approval_id, approve):
         session = current_session()
         with self._lock:
             item = self._pending.get(approval_id)
@@ -446,6 +467,9 @@ class SafeDeletePlugin:
         source_path, target_path = item["path"], item["target_path"]
         args = {"source_path": source_path, "target_path": target_path}
         allowed, reason = self.policy.authorize("convert_file", args)
+        if not allowed:
+            return {"code": "DENIED", "error": reason}
+        allowed, reason = self.policy.authorize("safe_delete", {"path": source_path})
         if not allowed:
             return {"code": "DENIED", "error": reason}
         source = self.policy.workspace.resolve(source_path)

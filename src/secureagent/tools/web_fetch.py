@@ -1,5 +1,11 @@
 """Fetch public pages through DeepSeek's remote Fetch API."""
 
+from secureagent.tools.spec import spec
+
+WEB_FETCH = spec("web_fetch", "通过配置的网页提供方读取公开网页；只返回请求网址，不提供目标网站状态或最终跳转地址。",
+                 {"url": {"type": "string", "description": "公开网页的 HTTP(S) 网址，不得包含登录凭据。"}}, ["url"])
+
+
 import ipaddress
 import json
 import os
@@ -52,6 +58,7 @@ def valid_url(url: str) -> bool:
 
 
 class DeepSeekFetchProvider:
+    id = "deepseek-fetch-api"
     def fetch(self, url: str) -> dict:
         key = os.environ.get("DEEPSEEK_API_KEY", "").strip()
         if not key:
@@ -89,7 +96,7 @@ def web_fetch(url: str, provider: DeepSeekFetchProvider) -> dict:
     if "error" in result:
         return result
     content = result["content"]
-    output = {"requested_url": url, "retrieved_via": "deepseek-fetch-api", "notice": NOTICE,
+    output = {"requested_url": url, "retrieved_via": result.get("provider_id", getattr(provider, "id", "unknown")), "notice": NOTICE,
               "content": content, "truncated": False}
     if len(json.dumps(output, ensure_ascii=False)) <= MAX_OUTPUT_CHARS:
         return output

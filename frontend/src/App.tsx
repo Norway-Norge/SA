@@ -32,6 +32,14 @@ type Session = { id: string; title: string; serverId: string | null; messages: C
 type RemoteSession = { session_id: string; title: string; updated_at: string; messages: ChatMessage[]; workspace_id?: string | null; deleted?: boolean };
 type Workspace = { id: string; name: string; path: string };
 type SkillCatalog = { skills: { name: string; description: string; source: string; path: string; conflict: boolean }[]; issues: { path: string; error: string }[]; truncated: boolean };
+type Personas = { personas: string[]; selected: string | null };
+
+function personaLabel(name: string) {
+  if (name === "catgirl") return "可爱猫娘";
+  if (name === "detective") return "工藤新一";
+  if (name === "demon") return "恶魔小子唐喻琪";
+  return name;
+}
 
 type Health = { ok: boolean; configured: boolean; workspace?: string | null; model?: string; tools?: string[]; context_window?: number | null };
 
@@ -187,6 +195,9 @@ function App() {
   const [skillCatalog, setSkillCatalog] = useState<SkillCatalog | null>(null);
   const [skillError, setSkillError] = useState("");
   const [skillRevision, setSkillRevision] = useState(0);
+  const [personas, setPersonas] = useState<Personas | null>(null);
+  const [personaError, setPersonaError] = useState("");
+  const [personaSaving, setPersonaSaving] = useState(false);
   const [sidebarOpen, setSidebarOpen] = useState(false);
   const [notice, setNotice] = useState("");
   const [liveReasoning, setLiveReasoning] = useState<{ sessionId: string; steps: LiveStep[]; answer: string; answerInterrupted: boolean } | null>(null);
@@ -282,6 +293,49 @@ function App() {
     ? `上次模型调用占上下文窗口 ${usagePercent!.toFixed(1)}%；输入 ${usage.prompt_tokens.toLocaleString()} tokens，输出 ${usage.completion_tokens.toLocaleString()} tokens，窗口 ${windowSize.toLocaleString()} tokens。下一次请求可能变化。`
     : `上次模型调用 ${used.toLocaleString()} tokens；当前模型窗口未配置或与记录不一致。`;
   const activeWorkspace = workspaces.find((workspace) => workspace.id === active?.workspaceId);
+  const personaWorkspace = active?.workspaceId ?? null;
+  const personaAvailable = Boolean(active?.workspaceId || active?.serverId);
+  const personaScopeRef = useRef(personaWorkspace);
+  personaScopeRef.current = personaWorkspace;
+
+  useEffect(() => {
+    setPersonas(null);
+    setPersonaError("");
+    if (!personaAvailable) return;
+    const controller = new AbortController();
+    const query = personaWorkspace ? `?workspace_id=${encodeURIComponent(personaWorkspace)}` : "";
+    fetch(`/api/personas${query}`, { signal: controller.signal })
+      .then(async (response) => {
+        if (!response.ok) throw new Error("无法读取人格设置，请检查工作区和后端配置。");
+        return await response.json() as Personas;
+      })
+      .then((data) => setPersonas(data))
+      .catch((error: Error) => { if (error.name !== "AbortError") setPersonaError(error.message); });
+    return () => controller.abort();
+  }, [personaWorkspace, personaAvailable]);
+
+  async function changePersona(name: string) {
+    const requestedWorkspace = personaWorkspace;
+    setPersonaSaving(true);
+    setPersonaError("");
+    try {
+      const response = await fetch("/api/personas", {
+        method: "PUT", headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ name: name || null, workspace_id: requestedWorkspace }),
+      });
+      if (!response.ok) throw new Error("无法切换人格，请刷新后重试。");
+      const data = await response.json() as Personas;
+      if (personaScopeRef.current === requestedWorkspace) setPersonas(data);
+    } catch (error) {
+      if (personaScopeRef.current === requestedWorkspace) {
+        const message = error instanceof Error ? error.message : "无法切换人格。";
+        setPersonaError(message);
+        setNotice(message);
+      }
+    } finally {
+      setPersonaSaving(false);
+    }
+  }
 
   useEffect(() => {
     if (!inspectorOpen || !activeWorkspace) { setSkillCatalog(null); setSkillError(""); return; }
@@ -687,6 +741,16 @@ function App() {
           <button className="icon-button mobile-menu" onClick={() => setSidebarOpen((value) => !value)} aria-label="打开导航"><Menu size={19} /></button>
           <div className="crumbs"><strong>{active?.title || "新对话"}</strong></div>
           <div className="topbar-actions">
+            <label className="persona-select" title={personaError || `${personaWorkspace ? "同一工作区的会话" : "未分组会话"}共享此设置，重启后恢复配置默认值`}>
+              <span>人格（{personaWorkspace ? "工作区" : "未分组会话"}共享）</span>
+              <select aria-label={`回复人格（${personaWorkspace ? "工作区" : "未分组会话"}共享）`} value={personas?.selected ?? ""}
+                disabled={!personas || !personaAvailable || personaSaving || busy || loadingSessions}
+                onChange={(event) => void changePersona(event.target.value)}>
+                {!personas && <option value="">{personaError ? "加载失败" : "加载中"}</option>}
+                {personas && <option value="">不使用人格</option>}
+                {personas?.personas.map((name) => <option value={name} key={name}>{personaLabel(name)}</option>)}
+              </select>
+            </label>
             <div className={`connection-pill ${healthError ? "offline" : health?.configured ? "online" : "pending"}`}><span />{healthError ? "未连接" : health?.configured ? "配置就绪" : "待配置"}</div>
             <button className="topbar-button" onClick={() => setInspectorOpen((value) => !value)} aria-expanded={inspectorOpen}><PanelRightClose size={17} /> <span>运行详情</span></button>
           </div>

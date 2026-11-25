@@ -3,6 +3,7 @@
 from contextlib import contextmanager
 from contextvars import ContextVar
 from dataclasses import dataclass
+import os
 from threading import RLock
 
 
@@ -36,7 +37,11 @@ class ReadObservation:
 
 
 def file_identity(st) -> tuple[int, int, int, int, int]:
-    return (st.st_dev, st.st_ino, st.st_size, st.st_mtime_ns, st.st_ctime_ns)
+    # On Windows Python 3.12 exposes creation time separately; st_ctime can
+    # differ between fstat and path stat for the same file. Python 3.10's
+    # Windows st_ctime was creation time, so retain that identity component.
+    created_or_changed = getattr(st, "st_birthtime_ns", st.st_ctime_ns) if os.name == "nt" else st.st_ctime_ns
+    return (st.st_dev, st.st_ino, st.st_size, st.st_mtime_ns, created_or_changed)
 
 
 class ObservationStore:
@@ -51,6 +56,10 @@ class ObservationStore:
         if session is not None:
             with self._lock:
                 self._items[(session, observation.resource)] = observation
+
+    def invalidate_all(self) -> None:
+        with self._lock:
+            self._items.clear()
 
     def get(self, resource: str) -> ReadObservation | None:
         session = _current_session.get()

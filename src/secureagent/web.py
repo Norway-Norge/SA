@@ -92,6 +92,11 @@ class SessionTitleRequest(BaseModel):
     title: str = Field(min_length=1, max_length=80)
 
 
+class PersonaRequest(BaseModel):
+    name: str | None = Field(max_length=128)
+    workspace_id: str | None = Field(default=None, max_length=64)
+
+
 def get_agent() -> Agent:
     global agent, workspace_path
     if agent is not None:
@@ -165,6 +170,21 @@ def selected_agent(identity: str | None) -> Agent:
         model = ChatModel(api_key=api_key, model=model_name, base_url=os.environ.get("SA_BASE_URL") or None)
         workspace_agents[identity] = Agent(model, Dispatcher(policy, image, cache_dir=cache))
         return workspace_agents[identity]
+
+
+@app.get("/api/personas")
+def get_personas(workspace_id: str | None = None):
+    return selected_agent(workspace_id).dispatcher.personas.snapshot()
+
+
+@app.put("/api/personas")
+def select_persona(request: PersonaRequest):
+    personas = selected_agent(request.workspace_id).dispatcher.personas
+    try:
+        personas.select(request.name)
+    except ValueError as exc:
+        raise HTTPException(status_code=400, detail="人格不存在或已卸载。") from exc
+    return personas.snapshot()
 
 
 def locate_session(session_id: str, *, include_deleted: bool = False) -> tuple[str | None, SessionStore]:

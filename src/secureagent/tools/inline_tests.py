@@ -1,5 +1,13 @@
 """Run generated Python and unittest code in a disposable, isolated container."""
 
+from secureagent.tools.spec import spec
+
+INLINE_TESTS = spec("run_inline_tests", "在一次性 Docker 容器中测试临时 Python 代码，不访问或写入宿主工作区。code 是 solution.py 的完整代码；tests 是 unittest 测试代码，可使用 from solution import ...。容器结束后删除临时文件。必须包含 unittest.TestCase 测试；按结果如实报告。",
+                    {"code": {"type": "string", "description": "要测试的完整 Python 源代码，最多 64 KiB。"},
+                     "tests": {"type": "string", "description": "导入 solution 的 unittest 测试源代码，最多 64 KiB。"}},
+                    ["code", "tests"])
+
+
 import json
 import subprocess
 import threading
