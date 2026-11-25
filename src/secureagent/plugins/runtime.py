@@ -117,8 +117,8 @@ class PluginRegistration:
 class TrustedPluginRuntime:
     """Mount explicit trusted plugins; never imports model-supplied code."""
 
-    def __init__(self, registry, policy):
-        self.context = Context()
+    def __init__(self, registry, policy, *, context=None):
+        self.context = context if context is not None else Context()
         self.registry = ToolRegistryService(self.context, registry)
         self.policy = policy
         self._lifecycle_lock = RLock()

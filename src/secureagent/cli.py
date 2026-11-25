@@ -16,7 +16,7 @@ from secureagent.agent.model import ChatModel
 from secureagent.security.policy import Policy
 from secureagent.security.observations import read_session
 from secureagent.security.workspace import Workspace, WorkspaceError
-from secureagent.tools.dispatcher import Dispatcher
+from secureagent.plugins.composition import create_dispatcher
 from secureagent.tools.shell import sandbox_available
 
 
@@ -50,7 +50,7 @@ def main(argv: list[str] | None = None) -> int:
         print("SA_SANDBOX_MODE 无效。", file=sys.stderr)
         return 2
     model = ChatModel(api_key=api_key, model=model_name, base_url=os.environ.get("SA_BASE_URL") or None)
-    agent = Agent(model, Dispatcher(policy, image))
+    agent = Agent(model, create_dispatcher(policy, image))
     history = None
     session_id = str(uuid.uuid4())
     print(f"已授权工作区：{workspace.root}", file=sys.stderr)

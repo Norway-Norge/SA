@@ -24,7 +24,7 @@ from secureagent.security.policy import Policy, SANDBOX_MODES
 from secureagent.security.observations import read_session
 from secureagent.security.workspace import Workspace, WorkspaceError
 from secureagent.session_store import SessionStore, SessionStoreError, approval_outcome, display_tool_event, tool_process
-from secureagent.tools.dispatcher import Dispatcher
+from secureagent.plugins.composition import create_dispatcher
 from secureagent.tools.shell import sandbox_available
 from secureagent.workspaces import WorkspaceRegistry, choose_directory, workspace_storage
 from secureagent.skills import discover_skills
@@ -129,7 +129,7 @@ def get_agent() -> Agent:
         cache = workspace_storage(workspace.root, "cache") if image else None
     except (OSError, ValueError) as exc:
         raise HTTPException(status_code=503, detail="工作区缓存目录不可用。") from exc
-    agent = Agent(model, Dispatcher(policy, image, cache_dir=cache))
+    agent = Agent(model, create_dispatcher(policy, image, cache_dir=cache))
     return agent
 
 
@@ -168,7 +168,7 @@ def selected_agent(identity: str | None) -> Agent:
         except ValueError as exc:
             raise HTTPException(status_code=503, detail="工作区策略配置无效。") from exc
         model = ChatModel(api_key=api_key, model=model_name, base_url=os.environ.get("SA_BASE_URL") or None)
-        workspace_agents[identity] = Agent(model, Dispatcher(policy, image, cache_dir=cache))
+        workspace_agents[identity] = Agent(model, create_dispatcher(policy, image, cache_dir=cache))
         return workspace_agents[identity]
 
 
