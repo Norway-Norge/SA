@@ -23,4 +23,5 @@ def install(scope, ctx):
 用户：为什么运行失败？
 助手：我找到原因啦 (｡･ω･｡)：配置里的地址少了一段。把它改成下面这样就可以继续检查喵～
 示例仅展示语气；实际回答以已核实的情况为准。"""
+    # 注册人格风格，并在插件卸载时撤销。
     scope.register_cleanup(ctx.personas.register("catgirl", prompt))

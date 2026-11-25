@@ -15,6 +15,7 @@ class RecycleService(Service):
         self._entry = None
         self._used = False
         self.file_system = None
+        # 将此服务注册到 Cordis 上下文，供插件访问。
         super().__init__(ctx, "recycle")
 
     def register_provider(self, name, provider):

@@ -23,5 +23,6 @@ def installer(workspace, image, sandboxes):
             if not sandboxes.close():
                 raise RuntimeError("测试容器清理未确认")
         scope.register_cleanup(close)
+        # 注册能力提供方，并在插件卸载时撤销注册。
         scope.register_cleanup(ctx.testRunner.register_provider("docker", provider))
     return install

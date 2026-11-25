@@ -13,6 +13,7 @@ class WebService(Service):
         self._fetch = {}
         self.search_provider = search_provider or os.environ.get("SA_WEB_SEARCH_PROVIDER") or None
         self.fetch_provider = fetch_provider or os.environ.get("SA_WEB_FETCH_PROVIDER") or None
+        # 将此服务注册到 Cordis 上下文，供插件访问。
         super().__init__(ctx, "web")
 
     def _register(self, store, provider_id, provider, method):

@@ -10,6 +10,7 @@ class PersonaService(Service):
         self._lock = RLock()
         self._personas = {}
         self._selected = None
+        # 将此服务注册到 Cordis 上下文，供插件访问。
         super().__init__(ctx, "personas")
 
     def register(self, name, prompt):

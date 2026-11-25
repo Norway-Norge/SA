@@ -72,6 +72,7 @@ class PluginRegistration:
         with self._condition:
             if self._closing:
                 raise RuntimeError("插件正在卸载")
+            # 注册受生命周期保护的工具，并保存注销函数。
             dispose = self.registry.register(schema, self.guard(handler))
             self._tools.append(dispose)
             return dispose
@@ -92,6 +93,7 @@ class PluginRegistration:
                 while not self._closed:
                     self._condition.wait()
                 return
+            # 先停止接收新工具调用，再等待已开始的调用完成并清理资源。
             self._closing = True
             for dispose in reversed(self._tools):
                 try:
@@ -147,6 +149,7 @@ class TrustedPluginRuntime:
 
         def activate():
             with self._lifecycle_lock:
+                # 在 Cordis 中挂载插件，并检查依赖及启动结果。
                 fiber = self.context.plugin(component)
                 if startup_errors:
                     fiber.dispose_sync()

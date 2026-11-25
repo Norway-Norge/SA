@@ -22,6 +22,7 @@ class TurnEventService(Service):
     def __init__(self, ctx):
         self._lock = RLock()
         self._subscriptions = {}
+        # 将此服务注册到 Cordis 上下文，供插件访问。
         super().__init__(ctx, "turn_events")
 
     def subscribe(self, name, factory):

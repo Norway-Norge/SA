@@ -46,9 +46,11 @@ class RuntimeComposition:
         self.sandboxes = StatefulTestSandboxes(policy.workspace, sandbox_image, cache_dir=cache_dir) if sandbox_image else None
         tool_registry = registry if registry is not None else ToolRegistry()
         self.safe_delete = None
+        # 为当前工作区创建根上下文，后续服务和插件都装配到这里。
         self.context = Context()
         self.plugin_runtime = TrustedPluginRuntime(tool_registry, policy, context=self.context)
         self.registry = self.plugin_runtime.registry
+        # 创建共享服务，并通过各自的 Service 基类挂载到上下文。
         self.turn_events = TurnEventService(self.plugin_runtime.context)
         self.personas = PersonaService(self.plugin_runtime.context)
         self.system_prompt = SystemPromptService(self.plugin_runtime.context)
@@ -58,18 +60,22 @@ class RuntimeComposition:
         self.test_runner = TestRunnerService(self.plugin_runtime.context)
         self.file_search = FileSearchService(self.plugin_runtime.context)
         self.recycle = RecycleService(self.plugin_runtime.context)
+        # 系统提示词组装时读取当前选择的人格。
         self.system_prompt.section("persona", lambda _: (self.personas.current() or (None, ""))[1], order=1000)
         self.plugins = PluginService(self.plugin_runtime)
+        # 显式安装默认提示词和工具监控插件。
         install_default_plugins(self.plugins)
         self.unload_safe_delete = None
         self.unload_file_tools = None
         self._decide_edit = lambda approval_id, approve: decide_edit(
             self.policy, self.observations, self.edit_approvals, approval_id, approve)
+        # 自定义注册表由调用方管理；默认路径装配内置 Provider 和工具。
         if registry is None:
             self.plugins.register_tool("spill-provider-local", local_spill.installer(policy.workspace), dependencies=("spillStore",))
             self.plugins.register_tool("read-spill", read_spill.install, dependencies=("spillStore", "systemPrompt"))
             self.plugins.register_tool("skills-provider-local", local_skills.installer(policy.workspace), dependencies=("skills",))
             self.plugins.register_tool("skill", skill.install, dependencies=("skills", "systemPrompt"))
+            # 创建文件系统服务并通过可信插件配置安装当前 Provider。
             self.file_system_service = FileSystemService(self.plugin_runtime.context, policy.workspace,
                                                          on_change=self._invalidate_filesystem_state)
             self.recycle.file_system = self.file_system_service
@@ -77,6 +83,7 @@ class RuntimeComposition:
             self.filesystem_plugins.register_factory("fs-provider-local", local_filesystem.installer(policy.workspace))
             self.filesystem_plugins.reload_from_environment()
             self.plugins.register_tool("file-search-provider-local", local_file_search.installer(policy.workspace, self.spills), dependencies=("fileSearch",))
+            # 分别安装文件工具，依赖声明控制其需要的服务。
             file_plugins = [
                 ("read-file", read_file.installer(policy, self.observations), ("fs", "systemPrompt")),
                 ("search-files", search_files.install, ("fileSearch", "systemPrompt")),
@@ -98,12 +105,14 @@ class RuntimeComposition:
                 for dispose in reversed(file_disposers):
                     dispose()
             self.unload_file_tools = unload_file_tools
+            # 联网功能按开关分别装配 Provider 和工具。
             if web_search_enabled():
                 self.plugins.register_tool("web-search-provider-deepseek", deepseek_search.install, dependencies=("web",))
                 self.plugins.register_tool("web-search", web_search.install, dependencies=("web", "systemPrompt"))
             if web_fetch_enabled():
                 self.plugins.register_tool("web-fetch-provider-deepseek", deepseek_fetch.install, dependencies=("web",))
                 self.plugins.register_tool("web-fetch", web_fetch.install, dependencies=("web", "systemPrompt"))
+            # 回收功能的 Provider 与工具插件分别注册。
             self.recycle_backend = SafeDeleteOperations(policy, self.observations)
             self.plugins.register_tool("recycle-provider-local", local_recycle.installer(self.recycle_backend), dependencies=("recycle",))
             self.safe_delete = self.recycle
@@ -121,6 +130,7 @@ class RuntimeComposition:
                 for dispose in reversed(recycle_disposers):
                     dispose()
             self.unload_safe_delete = unload_safe_delete
+            # 仅配置测试镜像时安装容器测试 Provider 和工具。
             if sandbox_image:
                 self.plugins.register_tool("tests-provider-docker", docker_tests.installer(
                     policy.workspace, sandbox_image, self.sandboxes), dependencies=("testRunner",))

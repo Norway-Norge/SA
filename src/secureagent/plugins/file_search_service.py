@@ -9,6 +9,7 @@ class FileSearchService(Service):
     def __init__(self, ctx):
         self._lock = RLock()
         self._providers = {}
+        # 将此服务注册到 Cordis 上下文，供插件访问。
         super().__init__(ctx, "fileSearch")
 
     def register_provider(self, name, provider):

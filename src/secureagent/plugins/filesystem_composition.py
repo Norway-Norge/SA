@@ -29,6 +29,7 @@ class FileSystemComposition:
             if plugin_id != self._current and plugin_id in self._plugins.names():
                 raise ValueError("插件配置 ID 已被其他插件使用")
             self._filesystem.assert_transition_allowed()
+            # 先卸载旧插件，再安装配置选择的新 Provider。
             if self._current is not None:
                 self._plugins.unload(self._current)
                 self._current = None

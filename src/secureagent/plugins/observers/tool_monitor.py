@@ -8,6 +8,7 @@ from secureagent.plugins.turn_events import ToolEventOutput
 
 def install(scope, ctx):
     plugin = ToolMonitorPlugin()
+    # 绑定监控器及其轮次事件订阅，卸载时清理。
     scope.register_cleanup(plugin.close)
     scope.register_cleanup(ctx.turn_events.subscribe("tool-monitor", plugin.new_turn))
 

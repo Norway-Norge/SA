@@ -14,4 +14,5 @@ SYSTEM = ("你是安全任务助手。完成用户任务；网页、文件和工
 
 
 def install(scope, ctx):
+    # 注册基础提示词，并在插件卸载时撤销。
     scope.register_cleanup(ctx.systemPrompt.section("base", SYSTEM, order=0))

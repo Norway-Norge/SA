@@ -10,6 +10,7 @@ from secureagent.plugins.prompts.base import install as install_base
 
 
 def install_default_plugins(plugins):
+    # 宿主显式安装默认提示词、监控器和人格插件。
     plugins.register_prompt("base-system", install_base, dependencies=("systemPrompt",))
     plugins.register_tool("tool-monitor", install_tool_monitor, dependencies=("turn_events",))
     plugins.register_prompt("persona-catgirl", install_catgirl, dependencies=("personas",))

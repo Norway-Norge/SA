@@ -10,6 +10,7 @@ class PluginService(Service):
         self.runtime = runtime
         self._lock = RLock()
         self._plugins = {}
+        # 将此服务注册到 Cordis 上下文，供插件访问。
         super().__init__(runtime.context, "plugins")
 
     def register(self, name, install, *, dependencies=()):

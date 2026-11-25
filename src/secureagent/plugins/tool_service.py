@@ -6,6 +6,7 @@ from cordis_py import Service
 class ToolRegistryService(Service):
     def __init__(self, ctx, registry):
         self._registry = registry
+        # 将此服务注册到 Cordis 上下文，供插件访问。
         super().__init__(ctx, "tools")
 
     def register(self, schema, handler):

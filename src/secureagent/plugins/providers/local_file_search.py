@@ -16,5 +16,6 @@ def installer(workspace, spills):
         provider = LocalFileSearch()
         provider.search = scope.guard(provider.search)
         provider.glob = scope.guard(provider.glob)
+        # 注册能力提供方，并在插件卸载时撤销注册。
         scope.register_cleanup(ctx.fileSearch.register_provider("local", provider))
     return install

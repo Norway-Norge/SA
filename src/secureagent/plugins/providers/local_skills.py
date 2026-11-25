@@ -18,5 +18,6 @@ def installer(workspace):
         provider = LocalSkills()
         provider.list = scope.guard(provider.list)
         provider.load = scope.guard(provider.load)
+        # 注册能力提供方，并在插件卸载时撤销注册。
         scope.register_cleanup(ctx.skills.register_provider("local", provider))
     return install

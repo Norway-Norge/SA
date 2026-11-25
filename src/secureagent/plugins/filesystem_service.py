@@ -18,6 +18,7 @@ class FileSystemService(Service):
         self._transition = False
         self._active = 0
         self._threads = {}
+        # 将此服务注册到 Cordis 上下文，供插件访问。
         super().__init__(ctx, "fs")
 
     def _change(self, mutate):
