@@ -49,10 +49,12 @@ def _edit(raw: bytes, old: str, new: str, replace_all: bool) -> tuple[bytes | No
 
 def propose_edit(policy: Policy, observations: ObservationStore, approvals: EditApprovals,
                  path: str, old_string: str, new_string: str, replace_all: bool = False,
-                 *, file_system: FileSystem | None = None) -> dict:
+                 *, file_system: FileSystem | None = None, authorize=None) -> dict:
     fs = file_system if file_system is not None else RestrictedFileSystem(
         policy.workspace, LocalFileSystem(policy.workspace.root))
-    allowed, reason = policy.authorize("edit_file", {"path": path})
+    check = authorize or policy.authorize
+    allowed, reason = check("edit_file", {"path": path, "old_string": old_string,
+                                           "new_string": new_string, "replace_all": replace_all})
     if not allowed:
         return {"code": "DENIED", "error": reason}
     if len(old_string.encode("utf-8")) > MAX_CREATE_BYTES or len(new_string.encode("utf-8")) > MAX_CREATE_BYTES:
@@ -85,7 +87,7 @@ def propose_edit(policy: Policy, observations: ObservationStore, approvals: Edit
 
 
 def decide_edit(policy: Policy, observations: ObservationStore, approvals: EditApprovals,
-                approval_id: str, approve: bool, *, file_system: FileSystem | None = None) -> dict:
+                approval_id: str, approve: bool, *, file_system: FileSystem | None = None, authorize=None) -> dict:
     fs = file_system if file_system is not None else RestrictedFileSystem(
         policy.workspace, LocalFileSystem(policy.workspace.root))
     pending = approvals.take(approval_id)
@@ -95,8 +97,11 @@ def decide_edit(policy: Policy, observations: ObservationStore, approvals: EditA
         if not approve:
             result = {"status": "DENIED", "message": "用户拒绝编辑"}
         else:
-            allowed, reason = policy.authorize("edit_file", {"path": pending.path})
-            result = _commit(policy, observations, pending, fs) if allowed else {"error": reason, "code": "DENIED"}
+            check = authorize or policy.authorize
+            args = {"path": pending.path, "old_string": pending.old_string,
+                    "new_string": pending.new_string, "replace_all": pending.replace_all}
+            allowed, reason = check("edit_file", args)
+            result = _commit(check, observations, pending, fs, args) if allowed else {"error": reason, "code": "DENIED"}
     except Exception:
         observations.invalidate(pending.observation.resource)
         result = {"error": "审批后无法完成编辑，请检查文件状态", "status": "UNKNOWN"}
@@ -104,7 +109,7 @@ def decide_edit(policy: Policy, observations: ObservationStore, approvals: EditA
     return result
 
 
-def _commit(policy: Policy, observations: ObservationStore, pending: PendingEdit, fs: FileSystem) -> dict:
+def _commit(authorize, observations: ObservationStore, pending: PendingEdit, fs: FileSystem, args: dict) -> dict:
     target = fs.resolve(pending.path)
     observation = pending.observation
     if target.key != observation.resource or fs.current_version(target) != observation.version:
@@ -118,6 +123,6 @@ def _commit(policy: Policy, observations: ObservationStore, pending: PendingEdit
     if error:
         return {"code": "EDIT_INVALID", "error": error}
     result = fs.replace_observed(pending.path, target, observation.version, data, "edit",
-                                 lambda: policy.authorize("edit_file", {"path": pending.path}))
+                                 lambda: authorize("edit_file", args))
     observations.invalidate(observation.resource)
     return result

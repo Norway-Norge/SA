@@ -73,7 +73,7 @@ def tool_process(event: dict[str, Any]) -> dict[str, str]:
             status = "FAILED" if raw == "DENIED" else raw
         elif result.get("error") or (type(result.get("exit_code")) is int and result["exit_code"] != 0):
             status = "FAILED"
-        elif raw is None or raw in ("updated", "RESET", "CONVERTED", "RESTORED", "QUARANTINED"):
+        elif raw is None or raw in ("updated", "RESET", "CONVERTED", "RESTORED", "QUARANTINED", "SENT"):
             status = "COMPLETED"
     item = {"name": name, "status": status}
     path = args.get("path")
@@ -106,6 +106,32 @@ class SessionStore:
 
     def load_turns(self, session_id: str) -> list[dict[str, Any]]:
         return [record for record in self._load_records(session_id) if record.get("kind") is None]
+
+    def email_tool_message(self, session_id: str, operation_id: str) -> dict[str, str]:
+        """Find the latest recorded send_email tool result; it is not delivery evidence."""
+        with self._lock:
+            records = self._load_records(session_id)
+        calls = set()
+        latest = None
+        for record in records:
+            if record.get("kind") != "turn_event":
+                continue
+            data = record.get("data", {})
+            if record.get("event") == "tool/call":
+                call = data.get("call", {})
+                if isinstance(call, dict) and (call.get("function") or {}).get("name") == "send_email":
+                    calls.add(call.get("id"))
+            elif record.get("event") == "tool/result":
+                message = data.get("message")
+                if not isinstance(message, dict) or message.get("tool_call_id") not in calls:
+                    continue
+                try:
+                    content = json.loads(message.get("content", ""))
+                except (TypeError, ValueError):
+                    continue
+                if isinstance(content, dict) and content.get("operation_id") == operation_id:
+                    latest = {"status": "RECORDED", "tool_status": str(content.get("status", "UNKNOWN"))}
+        return latest or {"status": "NOT_FOUND"}
 
     def _load_records(self, session_id: str) -> list[dict[str, Any]]:
         path = self._path(session_id)

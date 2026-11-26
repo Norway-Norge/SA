@@ -103,6 +103,8 @@ def main(argv: list[str] | None = None) -> int:
                 with read_session(session_id):
                     if tool_name in {"safe_delete", "restore_file", "convert_file"}:
                         decision = agent.dispatcher.safe_delete.decide(result["approval_id"], approved)
+                    elif tool_name == "send_email":
+                        decision = agent.dispatcher.decide_email(result["approval_id"], approved)
                     else:
                         decision = agent.dispatcher.decide_edit(result["approval_id"], approved)
                 print("审批结果：" + json.dumps(decision, ensure_ascii=False))

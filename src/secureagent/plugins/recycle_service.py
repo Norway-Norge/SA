@@ -19,7 +19,7 @@ class RecycleService(Service):
         super().__init__(ctx, "recycle")
 
     def register_provider(self, name, provider):
-        methods = ("_resolve_target", "_valid_id", "_authorize_convert", "bind_decisions", "_decide",
+        methods = ("bind_decisions", "_decide",
                    "propose_delete", "propose_restore", "propose_convert", "list_items", "decide", "status")
         if (not isinstance(name, str) or not name.strip()
                 or any(not callable(getattr(provider, method, None)) for method in methods)):
@@ -65,15 +65,6 @@ class RecycleService(Service):
     def _call(self, method, *args):
         with self._lease() as provider:
             return getattr(provider, method)(*args)
-
-    def _resolve_target(self, path):
-        return self._call("_resolve_target", path)
-
-    def _valid_id(self, recycle_id):
-        return self._call("_valid_id", recycle_id)
-
-    def _authorize_convert(self, args):
-        return self._call("_authorize_convert", args)
 
     def bind_decisions(self, actions, handler):
         return self._call("bind_decisions", actions, handler)

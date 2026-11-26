@@ -22,6 +22,7 @@ from secureagent.agent.stream_redaction import StreamRedactor
 from secureagent.agent.model import ChatModel
 from secureagent.security.policy import Policy, SANDBOX_MODES
 from secureagent.security.observations import read_session
+from secureagent.security.email_evidence import email_evidence
 from secureagent.security.workspace import Workspace, WorkspaceError
 from secureagent.session_store import SessionStore, SessionStoreError, approval_outcome, display_tool_event, tool_process
 from secureagent.plugins.composition import create_dispatcher
@@ -485,6 +486,55 @@ def recycle_approval_status(approval_id: str, session_id: str) -> dict[str, Any]
     return status
 
 
+@app.post("/api/email-approvals/{approval_id}")
+def resolve_email_approval(approval_id: str, request: EditDecisionRequest) -> dict[str, Any]:
+    with session_operation(request.session_id):
+        session_id = session_store.normalize_id(request.session_id)
+        if session_id is None or len(approval_id) > 100:
+            raise HTTPException(status_code=400, detail="审批或会话标识无效。")
+        identity, store = locate_session(session_id)
+        dispatcher = selected_agent(identity).dispatcher
+        if dispatcher.decide_email is None:
+            raise HTTPException(status_code=503, detail="邮件插件未启用。")
+        with read_session(session_id):
+            result = dispatcher.decide_email(approval_id, request.approve)
+        if result.get("code") != "INVALID_APPROVAL":
+            outcome = result.get("status", "UNKNOWN")
+            note = f"用户{'批准' if request.approve else '拒绝'}了邮件发送；执行状态：{outcome}。"
+            try:
+                event = {"name": "email_decision", "arguments": {"approval_id": approval_id}, "result": result}
+                store.append_turn(session_id, [{"role": "user", "content": note}], "处理邮件审批", note, [event])
+            except SessionStoreError:
+                result["warning"] = "审批已处理，但会话记录保存失败；请检查发件箱。"
+            result["display_message"] = result.get("message", "邮件状态无法确认，请检查发件箱。")
+        return result
+
+
+@app.get("/api/email-approvals/{approval_id}")
+def email_approval_status(approval_id: str, session_id: str) -> dict[str, Any]:
+    normalized = session_store.normalize_id(session_id)
+    if normalized is None or len(approval_id) > 100:
+        raise HTTPException(status_code=400, detail="审批或会话标识无效。")
+    identity, store = locate_session(normalized)
+    approvals = selected_agent(identity).dispatcher.email_approvals
+    if approvals is not None:
+        with read_session(normalized):
+            status = approvals.status(approval_id)
+        if status.get("status") != "UNKNOWN":
+            return status
+    try:
+        for turn in reversed(store.load_turns(normalized)):
+            for item in turn["ui"]["tools"]:
+                if (isinstance(item, dict) and item.get("name") == "email_decision"
+                        and isinstance(item.get("arguments"), dict)
+                        and item["arguments"].get("approval_id") == approval_id
+                        and isinstance(item.get("result"), dict)):
+                    return item["result"]
+    except SessionStoreError as exc:
+        raise HTTPException(status_code=500, detail=str(exc)) from exc
+    return {"status": "UNKNOWN", "message": "审批状态不可用，请检查发件箱。"}
+
+
 @app.post("/api/chat")
 def chat(request: ChatRequest) -> dict[str, Any]:
     return _run_chat(request)
@@ -616,7 +666,8 @@ def _run_chat_inner(request: ChatRequest, reasoning: list[str] | None = None, co
 
     try:
         handler = ContextHandler(store, session_id, history, current_agent.model.summarize) if isinstance(current_agent, Agent) else None
-        with read_session(session_id), model_context(handler), journal_events(journal):
+        with read_session(session_id), model_context(handler), journal_events(journal), \
+                email_evidence(lambda operation_id: store.email_tool_message(session_id, operation_id)):
             state = current_agent.run(request.message, history)
     except ContextCompactionError as exc:
         journal("turn/end", {"reason": "failed"})

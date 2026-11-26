@@ -6,10 +6,12 @@ def installer(policy, observations, get_approvals, get_policy, set_decide):
     def install(scope, ctx):
         fs = ctx.fs
         set_decide(scope.guard(lambda approval_id, approve: decide_edit(
-            get_policy(), observations, get_approvals(), approval_id, approve, file_system=fs)))
+            get_policy(), observations, get_approvals(), approval_id, approve, file_system=fs,
+            authorize=ctx.security.reauthorize)))
         # 注册工具定义和执行函数。
         scope.register(EDIT, lambda args: propose_edit(policy, observations, get_approvals(), args["path"],
-            args["old_string"], args["new_string"], args.get("replace_all", False), file_system=fs))
+            args["old_string"], args["new_string"], args.get("replace_all", False), file_system=fs,
+            authorize=ctx.security.reauthorize))
         # 注册工具使用指引，并在插件卸载时撤销。
         scope.register_cleanup(ctx.get("systemPrompt").section(
             "tool:edit_file",

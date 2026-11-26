@@ -14,6 +14,7 @@ from pathlib import Path
 
 from secureagent.security.observations import current_session
 from secureagent.security.workspace import WorkspaceError, is_link_or_reparse, is_sensitive_component
+from secureagent.security.recycle_access import resolve_delete_target, valid_recycle_id
 from secureagent.tools.spec import PATH, spec
 from secureagent.tools.file_backend import file_version as _version, write_lock as _write_lock
 from secureagent.tools.create_file import MAX_CREATE_BYTES
@@ -33,8 +34,9 @@ CONVERT = spec("convert_file", "将已完整读取的文件转换到新的路径
 
 
 class SafeDeleteOperations:
-    def __init__(self, policy, observations):
+    def __init__(self, policy, observations, *, authorize=None):
         self.policy = policy
+        self.authorize = authorize or policy.authorize
         self.observations = observations
         self._lock = threading.RLock()
         self._pending = {}
@@ -64,18 +66,8 @@ class SafeDeleteOperations:
                                  if value["action"] not in removed}
         return dispose
 
-    def _authorize_convert(self, args):
-        self.policy.workspace.resolve(args["source_path"])
-        self.policy.workspace.resolve_new_file(args["target_path"])
-
     def _resolve_target(self, path):
-        try:
-            return self.policy.workspace.resolve(path)
-        except WorkspaceError:
-            target = self.policy.workspace.resolve(path, directory=True)
-            if target == self.policy.workspace.root:
-                raise WorkspaceError("不允许删除工作区根目录")
-            return target
+        return resolve_delete_target(self.policy.workspace, path)
 
     @staticmethod
     def _scan_directory(root):
@@ -162,10 +154,7 @@ class SafeDeleteOperations:
 
     @staticmethod
     def _valid_id(value):
-        try:
-            return isinstance(value, str) and uuid.UUID(value).hex == value
-        except (ValueError, AttributeError):
-            return False
+        return valid_recycle_id(value)
 
     def _trash(self, create=False):
         current = self.policy.workspace.root
@@ -241,7 +230,7 @@ class SafeDeleteOperations:
     def propose_convert(self, source_path, target_path, content):
         if len(source_path) > 1024 or len(target_path) > 1024 or len(content.encode("utf-8")) > MAX_CREATE_BYTES:
             return {"error": "路径或转换内容超过大小限制"}
-        allowed, reason = self.policy.authorize("convert_file", {"source_path": source_path, "target_path": target_path})
+        allowed, reason = self.authorize("convert_file", {"source_path": source_path, "target_path": target_path})
         if not allowed:
             return {"code": "DENIED", "error": reason}
         source = self.policy.workspace.resolve(source_path)
@@ -265,7 +254,7 @@ class SafeDeleteOperations:
         return result
 
     def propose_delete(self, path):
-        allowed, reason = self.policy.authorize("safe_delete", {"path": path})
+        allowed, reason = self.authorize("safe_delete", {"path": path})
         if not allowed:
             return {"code": "DENIED", "error": reason}
         target = self._resolve_target(path)
@@ -378,7 +367,7 @@ class SafeDeleteOperations:
         if action == "convert":
             return self._commit_convert(item)
         deleting = action in {"delete", "delete_directory"}
-        allowed, reason = self.policy.authorize("safe_delete" if deleting else "restore_file",
+        allowed, reason = self.authorize("safe_delete" if deleting else "restore_file",
                                                 {"path": path} if deleting else {"recycle_id": item["recycle_id"]})
         if not allowed:
             return {"code": "DENIED", "error": reason}
@@ -393,7 +382,7 @@ class SafeDeleteOperations:
             record = {"id": recycle_id, "session": item["session"], "path": path,
                       "version": item["version"], "kind": "directory", "state": "PREPARED"}
             self._save(folder, record)
-            allowed, reason = self.policy.authorize("safe_delete", {"path": path})
+            allowed, reason = self.authorize("safe_delete", {"path": path})
             if not allowed:
                 return {"code": "DENIED", "error": reason}
             if self.policy.workspace.resolve(path, directory=True) != target or self._scan_directory(target)[0] != item["version"]:
@@ -414,7 +403,7 @@ class SafeDeleteOperations:
                       "version": item["version"], "state": "PREPARED"}
             self._save(folder, record)
             # Recheck both policy and observed identity immediately before the move.
-            allowed, reason = self.policy.authorize("safe_delete", {"path": path})
+            allowed, reason = self.authorize("safe_delete", {"path": path})
             if not allowed:
                 return {"code": "DENIED", "error": reason}
             if self.policy.workspace.resolve(path) != target or _version(target) != (item["version"], item["identity"]):
@@ -438,7 +427,7 @@ class SafeDeleteOperations:
             target = self.policy.workspace.resolve_new_file(path)
             record["state"] = "RESTORING"
             self._save(folder, record)
-            allowed, reason = self.policy.authorize("restore_file", {"recycle_id": recycle_id})
+            allowed, reason = self.authorize("restore_file", {"recycle_id": recycle_id})
             if not allowed:
                 return {"code": "DENIED", "error": reason}
             if self.policy.workspace.resolve_new_file(path) != target or self._scan_directory(payload)[0] != item["version"]:
@@ -452,7 +441,7 @@ class SafeDeleteOperations:
         target = self.policy.workspace.resolve_new_file(path)
         record["state"] = "RESTORING"
         self._save(folder, record)
-        allowed, reason = self.policy.authorize("restore_file", {"recycle_id": recycle_id})
+        allowed, reason = self.authorize("restore_file", {"recycle_id": recycle_id})
         if not allowed:
             return {"code": "DENIED", "error": reason}
         if self.policy.workspace.resolve_new_file(path) != target or _version(payload) != (item["version"], item["identity"]):
@@ -466,10 +455,10 @@ class SafeDeleteOperations:
     def _commit_convert(self, item):
         source_path, target_path = item["path"], item["target_path"]
         args = {"source_path": source_path, "target_path": target_path}
-        allowed, reason = self.policy.authorize("convert_file", args)
+        allowed, reason = self.authorize("convert_file", args)
         if not allowed:
             return {"code": "DENIED", "error": reason}
-        allowed, reason = self.policy.authorize("safe_delete", {"path": source_path})
+        allowed, reason = self.authorize("safe_delete", {"path": source_path})
         if not allowed:
             return {"code": "DENIED", "error": reason}
         source = self.policy.workspace.resolve(source_path)
@@ -490,7 +479,7 @@ class SafeDeleteOperations:
                 stream.flush()
                 os.fsync(stream.fileno())
             staged_version = _version(Path(staged))
-            allowed, reason = self.policy.authorize("convert_file", args)
+            allowed, reason = self.authorize("convert_file", args)
             if not allowed:
                 return {"code": "DENIED", "error": reason}
             if (self.policy.workspace.resolve(source_path) != source or _version(source) != expected
@@ -502,7 +491,7 @@ class SafeDeleteOperations:
             record["state"] = "DESTINATION_PUBLISHED"
             self._save(folder, record)
             published_version = _version(target)
-            allowed, reason = self.policy.authorize("safe_delete", {"path": source_path})
+            allowed, reason = self.authorize("safe_delete", {"path": source_path})
             if (not allowed or self.policy.workspace.resolve(source_path) != source or _version(source) != expected
                     or self.policy.workspace.resolve(target_path) != target or not published_version
                     or not staged_version or published_version[0] != staged_version[0]

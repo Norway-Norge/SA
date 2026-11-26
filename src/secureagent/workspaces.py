@@ -11,7 +11,7 @@ from secureagent.security.workspace import Workspace, WorkspaceError, is_link_or
 
 
 def workspace_storage(root: Path, child: str) -> Path:
-    if child not in {"sessions", "cache"}:
+    if child not in {"sessions", "cache", "operations"}:
         raise ValueError("无效存储目录")
     root = Workspace(root).root
     parent = root / ".secureagent"

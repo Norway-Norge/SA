@@ -1,6 +1,8 @@
 """Compose one trusted, workspace-scoped SA runtime."""
 
 from pathlib import Path
+import os
+import shutil
 
 from cordis_py import Context
 
@@ -29,6 +31,14 @@ from secureagent.plugins.spill_service import SpillService
 from secureagent.plugins.test_runner_service import TestRunnerService
 from secureagent.plugins.file_search_service import FileSearchService
 from secureagent.plugins.recycle_service import RecycleService
+from secureagent.plugins.mcp_manager_service import McpManagerService
+from secureagent.plugins.security_service import SecurityService
+from secureagent.plugins.security import tool_authorization, recycle_authorization, email_authorization, output_redaction
+from secureagent.plugins import mcp_client
+from secureagent.plugins.tools import send_email, check_email_operation
+from secureagent.tools.email_mcp import EmailMcpClient
+from secureagent.security.email_operations import EmailOperationStore
+from secureagent.workspaces import workspace_storage
 from secureagent.plugins.providers import deepseek_search, deepseek_fetch, local_skills, local_spill, local_filesystem, local_file_search, local_recycle, docker_tests
 from secureagent.plugins.bootstrap import install_default_plugins
 
@@ -60,9 +70,16 @@ class RuntimeComposition:
         self.test_runner = TestRunnerService(self.plugin_runtime.context)
         self.file_search = FileSearchService(self.plugin_runtime.context)
         self.recycle = RecycleService(self.plugin_runtime.context)
+        self.mcp_manager = McpManagerService(self.plugin_runtime.context)
+        self.security = SecurityService(self.plugin_runtime.context, lambda: self.policy)
+        self.email_approvals = None
+        self.decide_email = None
         # 系统提示词组装时读取当前选择的人格。
         self.system_prompt.section("persona", lambda _: (self.personas.current() or (None, ""))[1], order=1000)
         self.plugins = PluginService(self.plugin_runtime)
+        self.plugins.register_tool("tool-authorization", tool_authorization.install,
+                                   dependencies=("tools", "security"))
+        self.plugins.register_tool("output-redaction", output_redaction.install, dependencies=("tools",))
         # 显式安装默认提示词和工具监控插件。
         install_default_plugins(self.plugins)
         self.unload_safe_delete = None
@@ -91,7 +108,7 @@ class RuntimeComposition:
                 ("create-file", create_file.installer(policy), ("fs", "systemPrompt")),
                 ("write-file", write_file.installer(policy, self.observations), ("fs", "systemPrompt")),
                 ("edit-file", edit_file.installer(policy, self.observations, lambda: self.edit_approvals,
-                    lambda: self.policy, lambda decide: setattr(self, "_decide_edit", decide)), ("fs", "systemPrompt")),
+                    lambda: self.policy, lambda decide: setattr(self, "_decide_edit", decide)), ("fs", "systemPrompt", "security")),
             ]
             file_disposers = []
             try:
@@ -112,8 +129,48 @@ class RuntimeComposition:
             if web_fetch_enabled():
                 self.plugins.register_tool("web-fetch-provider-deepseek", deepseek_fetch.install, dependencies=("web",))
                 self.plugins.register_tool("web-fetch", web_fetch.install, dependencies=("web", "systemPrompt"))
+            # 显式启用时才安装社区邮件 MCP 客户端；凭据不由模型提供。
+            if os.environ.get("SA_EMAIL_ENABLED", "").strip().lower() in {"1", "true", "yes"}:
+                node = shutil.which("node")
+                server = os.environ.get("SA_EMAIL_MCP_SERVER") or str(
+                    Path(__file__).resolve().parents[3] / ".secureagent" / "mcp" / "email-send" / "index.js")
+                host = os.environ.get("SA_EMAIL_SMTP_HOST", "").strip()
+                user = os.environ.get("SA_EMAIL_SMTP_USER", "").strip()
+                password = os.environ.get("SA_EMAIL_SMTP_PASSWORD", "")
+                sender = os.environ.get("SA_EMAIL_FROM", "").strip()
+                try:
+                    port = int(os.environ.get("SA_EMAIL_SMTP_PORT", "465"))
+                except ValueError as exc:
+                    raise ValueError("邮件 SMTP 端口无效") from exc
+                if not node or not Path(server).is_file() or not host or not user or not password or not sender or not 1 <= port <= 65535:
+                    raise ValueError("邮件 MCP Server、Node 或 SMTP 配置不完整")
+                self.plugins.register_tool("email-authorization", email_authorization.install, dependencies=("tools",))
+                dispose_client = self.plugins.register_tool("email-mcp-client", mcp_client.installer(
+                    "email", node, [server], env={"SMTP_HOST": host, "SMTP_PORT": str(port),
+                    "SMTP_SECURE": "true", "SMTP_USER": user, "SMTP_PASS": password}),
+                    dependencies=("mcpManager",))
+                try:
+                    client = EmailMcpClient(node, server, host, port, user, password, sender,
+                                            mcp_client=self.mcp_manager.get_client("email"))
+                    operations = EmailOperationStore(workspace_storage(policy.workspace.root, "operations"))
+                    self.email_approvals = send_email.EmailApprovals(client, lambda: self.policy, operations,
+                        authorize=self.security.reauthorize)
+                    dispose_email = self.plugins.register_tool("send-email", send_email.installer(
+                        self.email_approvals, dispose_client,
+                        lambda callback: setattr(self, "decide_email", callback)), dependencies=("systemPrompt",))
+                except BaseException:
+                    dispose_client()
+                    raise
+                try:
+                    self.plugins.register_tool("check-email-operation", check_email_operation.installer(
+                        self.email_approvals), dependencies=("systemPrompt",))
+                except BaseException:
+                    dispose_email()
+                    raise
             # 回收功能的 Provider 与工具插件分别注册。
-            self.recycle_backend = SafeDeleteOperations(policy, self.observations)
+            self.recycle_backend = SafeDeleteOperations(policy, self.observations, authorize=self.security.reauthorize)
+            self.plugins.register_tool("recycle-authorization", recycle_authorization.installer(
+                policy.workspace), dependencies=("tools",))
             self.plugins.register_tool("recycle-provider-local", local_recycle.installer(self.recycle_backend), dependencies=("recycle",))
             self.safe_delete = self.recycle
             recycle_plugins = (("safe-delete", safe_delete), ("list-recycle-bin", list_recycle_bin),

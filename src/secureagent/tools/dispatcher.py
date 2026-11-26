@@ -7,6 +7,7 @@ from pathlib import Path
 
 from secureagent.security.policy import Policy
 from secureagent.security.workspace import WorkspaceError
+from secureagent.security.pre_execute import DecisionKind, ToolInvocation, freeze
 from secureagent.tools.glob import validate_glob_pattern
 from secureagent.tools.file_service import LocalFileSystem
 from secureagent.tools.registry import ToolDefinition, ToolRegistry
@@ -68,6 +69,37 @@ class Dispatcher:
             return {"error": "文件系统 provider 不可用", "code": "FS_PROVIDER_UNAVAILABLE"}
 
     def execute(self, call: dict, *, expected: ToolDefinition | None = None, check_expected: bool = False) -> dict:
+        """Finalize every tool result before it reaches spill, logs, or the model."""
+        call_id = call.get("id", "")
+        function = call.get("function") or {}
+        name = function.get("name", "")
+        try:
+            message = self._execute(call, expected=expected, check_expected=check_expected)
+            result = json.loads(message["content"])
+        except Exception:
+            # The handler may already have committed a side effect.
+            result = {"status": "UNKNOWN", "error": "工具执行状态未知，请先核对，不要自动重试。"}
+        try:
+            args = json.loads(function.get("arguments", "{}"))
+            if not isinstance(args, dict):
+                args = {}
+        except (TypeError, ValueError):
+            args = {}
+        snapshot = self.policy.resolve()
+        invocation = ToolInvocation(name=str(name), arguments=freeze(args), tool_call_id=str(call_id),
+            session_id=snapshot.session_id, workspace=str(snapshot.workspace_root), permission_mode=snapshot.mode)
+        final_result = self.registry.post_execute(invocation, result)
+        if name == "read_file" and final_result != result:
+            # A filtered or replaced read must not count as a complete observation.
+            try:
+                self.observations.invalidate(self.file_system_service.resolve(args["path"]).key)
+            except Exception:
+                self.observations.invalidate_all()
+        result = final_result
+        return {"role": "tool", "tool_call_id": call_id,
+                "content": json.dumps(result, ensure_ascii=False)}
+
+    def _execute(self, call: dict, *, expected: ToolDefinition | None = None, check_expected: bool = False) -> dict:
         call_id = call.get("id", "")
         function = call.get("function") or {}
         name = function.get("name", "")
@@ -108,7 +140,21 @@ class Dispatcher:
                 validate_glob_pattern(args["pattern"])
             if name == "run_tests" and args["runner"] not in {"pytest", "unittest"}:
                 raise ValueError("测试类型无效")
-            allowed, reason = self.policy.authorize(name, args)
+            policy_snapshot = self.policy.resolve()
+            invocation = ToolInvocation(
+                name=name, arguments=freeze(args), tool_call_id=str(call_id),
+                session_id=policy_snapshot.session_id, workspace=str(policy_snapshot.workspace_root),
+                permission_mode=policy_snapshot.mode)
+            decision = self.registry.pre_execute(invocation)
+            if decision.kind != DecisionKind.ALLOW:
+                result = {"error": decision.reason or ("工具调用已取消" if decision.kind == DecisionKind.CANCEL else "前置策略拒绝"),
+                          "code": "TOOL_CANCELLED" if decision.kind == DecisionKind.CANCEL else "TOOL_DENIED"}
+                log.info("call_id=%r tool=%r decision=%s", str(call_id)[:100], str(name)[:100], decision.kind.value)
+                return {"role": "tool", "tool_call_id": call_id, "content": json.dumps(result, ensure_ascii=False)}
+            # A policy or approval must not authorize a removed or replaced tool.
+            if self.registry.get(name) is not tool:
+                raise ValueError("工具注册已变化")
+            allowed, reason = self.registry.check_guards(invocation)
             log.info("call_id=%r tool=%r decision=%s", str(call_id)[:100], str(name)[:100],
                      "ALLOW" if allowed else "DENY")
             if not allowed:

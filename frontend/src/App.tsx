@@ -122,6 +122,7 @@ function formatTool(name: string) {
   if (name === "create_file") return "创建文件";
   if (name === "write_file") return "写入文件";
   if (name === "edit_file") return "编辑文件";
+  if (name === "send_email") return "发送邮件";
   if (name === "run_tests") return "运行测试";
   if (name === "run_inline_tests") return "测试临时代码";
   if (name === "safe_delete") return "安全删除";
@@ -360,11 +361,11 @@ function App() {
     if (!active?.serverId) return;
     let cancelled = false;
     const pending = active.messages.flatMap((message) => message.tools || [])
-      .filter((tool) => ["edit_file", "safe_delete", "restore_file", "convert_file"].includes(tool.name) && tool.result?.status === "REVIEW" && typeof tool.result.approval_id === "string");
+      .filter((tool) => ["edit_file", "safe_delete", "restore_file", "convert_file", "send_email"].includes(tool.name) && tool.result?.status === "REVIEW" && typeof tool.result.approval_id === "string");
     if (!pending.length) return;
     Promise.all(pending.map(async (tool) => {
       const id = String(tool.result?.approval_id);
-      const group = tool.name === "edit_file" ? "edit-approvals" : "recycle-approvals";
+      const group = tool.name === "send_email" ? "email-approvals" : tool.name === "edit_file" ? "edit-approvals" : "recycle-approvals";
       const response = await fetch(`/api/${group}/${encodeURIComponent(id)}?session_id=${encodeURIComponent(active.serverId!)}`);
       if (!response.ok) return null;
       return { id, result: await response.json() as Record<string, unknown> };
@@ -644,13 +645,13 @@ function App() {
     }
   }
 
-  async function decideEdit(approvalId: string, approve: boolean, recycle = false) {
+  async function decideEdit(approvalId: string, approve: boolean, recycle = false, email = false) {
     if (!active?.serverId || busy) return;
     const currentId = active.id;
     setBusy(true);
     setNotice("");
     try {
-      const response = await fetch(`/api/${recycle ? "recycle-approvals" : "edit-approvals"}/${encodeURIComponent(approvalId)}`, {
+      const response = await fetch(`/api/${email ? "email-approvals" : recycle ? "recycle-approvals" : "edit-approvals"}/${encodeURIComponent(approvalId)}`, {
         method: "POST",
         headers: { "Content-Type": "application/json" },
         body: JSON.stringify({ session_id: active.serverId, approve }),
@@ -786,7 +787,7 @@ function App() {
                           img: ({ alt }) => <span>{alt || "图片"}</span>,
                           table: ({ children }) => <div className="markdown-table-wrap"><table>{children}</table></div>,
                         }}>{message.content}</ReactMarkdown> : message.content}</div>
-                        {message.tools?.filter((tool) => ["edit_file", "safe_delete", "restore_file", "convert_file"].includes(tool.name) && tool.result?.status === "REVIEW" && typeof tool.result.approval_id === "string").map((tool, toolIndex) => (
+                        {message.tools?.filter((tool) => ["edit_file", "safe_delete", "restore_file", "convert_file", "send_email"].includes(tool.name) && tool.result?.status === "REVIEW" && typeof tool.result.approval_id === "string").map((tool, toolIndex) => (
                           <div key={`${tool.name}-${toolIndex}`}>
                           {tool.name === "edit_file" && tool.result?.status === "REVIEW" && typeof tool.result.approval_id === "string" && (
                             <div className="approval-card">
@@ -807,6 +808,18 @@ function App() {
                               <div className="approval-actions"><button disabled={busy} onClick={() => void decideEdit(String(tool.result?.approval_id), false, true)}>拒绝</button>
                               <button className="approval-allow" disabled={busy} onClick={() => void decideEdit(String(tool.result?.approval_id), true, true)}>允许一次</button></div></div>
                             </div>
+                          )}
+                          {tool.name === "send_email" && tool.result?.status === "REVIEW" && typeof tool.result.approval_id === "string" && (
+                            <div className="approval-card"><div className="approval-heading"><span />等待邮件发送审批</div>
+                              <div className="approval-body"><div className="approval-detail">
+                                <div><span>发件人</span><pre>{String(tool.result.from ?? "")}</pre></div>
+                                <div><span>收件人</span><pre>{String(tool.result.to ?? "")}</pre></div>
+                                <div><span>主题</span><pre>{String(tool.result.subject ?? "")}</pre></div>
+                                <div><span>正文</span><pre>{String(tool.result.body ?? "")}</pre></div>
+                              </div><div className="approval-actions">
+                                <button disabled={busy} onClick={() => void decideEdit(String(tool.result?.approval_id), false, false, true)}>拒绝</button>
+                                <button className="approval-allow" disabled={busy} onClick={() => void decideEdit(String(tool.result?.approval_id), true, false, true)}>允许发送</button>
+                              </div></div></div>
                           )}
                           {tool.name === "convert_file" && tool.result?.status === "REVIEW" && typeof tool.result.approval_id === "string" && (
                             <div className="approval-card">

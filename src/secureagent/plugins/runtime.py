@@ -1,6 +1,7 @@
 """Lifecycle adapter for explicitly installed trusted in-process plugins."""
 
 import asyncio
+import inspect
 from threading import Condition, RLock, Thread, get_ident
 
 from cordis_py import Context, FiberState
@@ -40,6 +41,7 @@ class PluginRegistration:
         self._tools = []
         self._rules = []
         self._cleanups = []
+        self._event_disposers = []
         self.errors = []
 
     def register_cleanup(self, dispose):
@@ -85,6 +87,83 @@ class PluginRegistration:
             self._rules.append(dispose)
             return dispose
 
+    def register_pre_execute(self, hook):
+        """Bind a policy listener to this plugin's lifecycle."""
+        with self._condition:
+            if self._closing:
+                raise RuntimeError("插件正在卸载")
+            dispose = self.registry.on_pre_execute(self.guard(hook))
+            self._cleanups.append(dispose)
+            return dispose
+
+    def register_pre_execute_approval(self, handler):
+        with self._condition:
+            if self._closing:
+                raise RuntimeError("插件正在卸载")
+            dispose = self.registry.register_pre_execute_approval(self.guard(handler))
+            self._cleanups.append(dispose)
+            return dispose
+
+    def register_guard(self, handler):
+        """Register a lifecycle-bound monotonic security guard."""
+        with self._condition:
+            if self._closing:
+                raise RuntimeError("插件正在卸载")
+            dispose = self.registry.guard(self.guard(handler))
+            self._cleanups.append(dispose)
+            return dispose
+
+    def on(self, ctx, event, handler, *, prepend=False, global_=False):
+        """Bind Cordis listeners to this plugin and protect active policy calls."""
+        if not callable(handler):
+            raise TypeError("监听函数必须可调用")
+        if event not in {"tools/pre-execute", "tools/post-execute"}:
+            return ctx.on(event, handler, prepend=prepend, global_=global_)
+
+        async def listener(*values):
+            *event_args, next_hook = values
+            with self._condition:
+                if self._closing:
+                    raise RuntimeError("插件正在卸载")
+                self._active += 1
+                ident = get_ident()
+                self._threads[ident] = self._threads.get(ident, 0) + 1
+            called = False
+            def next_once():
+                nonlocal called
+                if called:
+                    raise ValueError("前置策略不能重复调用 next")
+                called = True
+                return next_hook()
+            try:
+                result = handler(*event_args, next_once)
+                return await result if inspect.isawaitable(result) else result
+            finally:
+                with self._condition:
+                    self._active -= 1
+                    self._threads[ident] -= 1
+                    if not self._threads[ident]:
+                        del self._threads[ident]
+                    self._condition.notify_all()
+
+        with self._condition:
+            if self._closing:
+                raise RuntimeError("插件正在卸载")
+            undo = ctx.on(event, listener, prepend=prepend, global_=global_)
+            changed = (self.registry.pre_execute_event_changed if event == "tools/pre-execute"
+                       else self.registry.post_execute_event_changed)
+            changed()
+            disposed = False
+            def dispose():
+                nonlocal disposed
+                with self._condition:
+                    if not disposed:
+                        disposed = True
+                        undo()
+                        changed()
+            self._event_disposers.append(dispose)
+            return dispose
+
     def close(self):
         with self._condition:
             if get_ident() in self._threads:
@@ -95,6 +174,12 @@ class PluginRegistration:
                 return
             # 先停止接收新工具调用，再等待已开始的调用完成并清理资源。
             self._closing = True
+            # Withdraw listeners before waiting so pending decisions detect changes.
+            for dispose in reversed(self._event_disposers):
+                try:
+                    dispose()
+                except Exception as exc:
+                    self.errors.append(exc)
             for dispose in reversed(self._tools):
                 try:
                     dispose()
@@ -116,6 +201,20 @@ class PluginRegistration:
             self._condition.notify_all()
 
 
+class PluginContext:
+    """Expose Cordis context while binding pre-execute listeners to the plugin scope."""
+
+    def __init__(self, context, scope):
+        self._context = context
+        self._scope = scope
+
+    def on(self, event, handler, *, prepend=False, global_=False):
+        return self._scope.on(self._context, event, handler, prepend=prepend, global_=global_)
+
+    def __getattr__(self, name):
+        return getattr(self._context, name)
+
+
 class TrustedPluginRuntime:
     """Mount explicit trusted plugins; never imports model-supplied code."""
 
@@ -133,7 +232,7 @@ class TrustedPluginRuntime:
             ctx.effect(lambda: scope.close)
             try:
                 if with_context:
-                    register(scope, ctx)
+                    register(scope, PluginContext(ctx, scope))
                 else:
                     register(scope)
             except BaseException as exc:
