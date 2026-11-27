@@ -1,4 +1,5 @@
 """Append-only JSONL storage for local Agent sessions."""
+"""保存、恢复会话"""
 
 import json
 import hashlib

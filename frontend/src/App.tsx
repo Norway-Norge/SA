@@ -15,6 +15,8 @@ type ToolEvent = {
 };
 type ProcessItem = { name: string; path?: string; status: string };
 type ContextUsage = { prompt_tokens: number; completion_tokens: number; model: string };
+type LiveApproval = { localSessionId: string; approvalId: string; serverSessionId: string; tool: string;
+  callId: string; workspace: string; permissionMode: string; reason: string; arguments: Record<string, unknown> };
 type LiveStep =
   | { kind: "reasoning"; text: string }
   | { kind: "tool"; callId: string; name: string; path?: string; status: string };
@@ -180,6 +182,8 @@ function App() {
   const [activeId, setActiveId] = useState(initialConversation.activeId);
   const [draft, setDraft] = useState("");
   const [busy, setBusy] = useState(false);
+  const [liveApproval, setLiveApproval] = useState<LiveApproval | null>(null);
+  const [approvalSubmitting, setApprovalSubmitting] = useState(false);
   const [health, setHealth] = useState<Health | null>(null);
   const [healthError, setHealthError] = useState("");
   const [workspaces, setWorkspaces] = useState<Workspace[]>([]);
@@ -600,6 +604,15 @@ function App() {
           if (event.type === "answer_delta" && typeof event.text === "string") setLiveReasoning((current) => current?.sessionId === currentId ? { ...current, answer: current.answer + event.text } : current);
           if (event.type === "answer_reset") setLiveReasoning((current) => current?.sessionId === currentId ? { ...current, answer: "", answerInterrupted: false } : current);
           if (event.type === "answer_interrupted") setLiveReasoning((current) => current?.sessionId === currentId ? { ...current, answerInterrupted: true } : current);
+          if (event.type === "approval_request" && typeof event.approval_id === "string" && typeof event.session_id === "string"
+              && typeof event.tool === "string" && typeof event.tool_call_id === "string" && typeof event.workspace === "string"
+              && typeof event.permission_mode === "string" && typeof event.reason === "string" && isRecord(event.arguments)) {
+            setLiveApproval({ localSessionId: currentId, approvalId: event.approval_id, serverSessionId: event.session_id,
+              tool: event.tool, callId: event.tool_call_id, workspace: event.workspace, permissionMode: event.permission_mode,
+              reason: event.reason, arguments: event.arguments });
+          }
+          if (event.type === "approval_closed" && typeof event.approval_id === "string")
+            setLiveApproval((current) => current?.approvalId === event.approval_id ? null : current);
           if (event.type === "tool_start" && typeof event.call_id === "string" && typeof event.name === "string") setLiveReasoning((current) => current?.sessionId === currentId ? { ...current, steps: [...current.steps, { kind: "tool", callId: event.call_id, name: event.name, path: typeof event.path === "string" ? event.path : undefined, status: "RUNNING" }] } : current);
           if (event.type === "tool_result" && typeof event.call_id === "string" && typeof event.status === "string") setLiveReasoning((current) => {
             if (!current || current.sessionId !== currentId) return current;
@@ -639,9 +652,28 @@ function App() {
       } : current);
       setNotice(error instanceof Error ? error.message : "Agent 请求失败");
     } finally {
+      setLiveApproval((current) => current?.localSessionId === currentId ? null : current);
       setBusy(false);
       if (completedNormally) setLiveReasoning(null);
       textareaRef.current?.focus();
+    }
+  }
+
+  async function decideLiveApproval(approval: LiveApproval, approve: boolean) {
+    if (approvalSubmitting) return;
+    setApprovalSubmitting(true);
+    try {
+      const response = await fetch(`/api/tool-approvals/${encodeURIComponent(approval.approvalId)}`, {
+        method: "POST", headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ session_id: approval.serverSessionId, approve }),
+      });
+      const result: unknown = await response.json();
+      if (!response.ok) throw new Error(isRecord(result) && typeof result.detail === "string" ? result.detail : "审批提交失败");
+      setLiveApproval((current) => current?.approvalId === approval.approvalId ? null : current);
+    } catch (error) {
+      setNotice(error instanceof Error ? error.message : "审批提交失败");
+    } finally {
+      setApprovalSubmitting(false);
     }
   }
 
@@ -838,7 +870,21 @@ function App() {
                       </div>
                     </article>
                   ))}
-                  {active.id === liveReasoning?.sessionId && <div className="live-reasoning">{liveReasoning.steps.map((step, index) => step.kind === "reasoning" && step.text ? <details className="reasoning-row" key={index} open><summary>思考过程 <ChevronDown size={14} /></summary><div className="reasoning-content"><ReactMarkdown remarkPlugins={[remarkGfm]} skipHtml components={{ img: ({ alt }) => <span>{alt || "图片"}</span> }}>{step.text}</ReactMarkdown></div></details> : null)}<TurnProcess items={liveReasoning.steps.filter((step): step is Extract<LiveStep, { kind: "tool" }> => step.kind === "tool")} running={busy} />{liveReasoning.answer && <div className="message-bubble assistant"><ReactMarkdown remarkPlugins={[remarkGfm]} skipHtml components={{ a: ({ children, ...props }) => <a {...props} target="_blank" rel="noopener noreferrer">{children}</a>, img: ({ alt }) => <span>{alt || "图片"}</span>, table: ({ children }) => <div className="markdown-table-wrap"><table>{children}</table></div> }}>{liveReasoning.answer}</ReactMarkdown>{liveReasoning.answerInterrupted && <small className="answer-interrupted">回复未完成</small>}</div>}{busy && !liveReasoning.answer && <div className="thinking"><div className="message-avatar"><Sparkles size={14} /></div><span className="thinking-dots"><i /><i /><i /></span><span>正在执行</span></div>}</div>}
+                  {active.id === liveApproval?.localSessionId && <div className="approval-card" role="region" aria-label="通用工具审批">
+                    <div className="approval-heading"><span />工具调用等待审批</div>
+                    <div className="approval-body"><p>请核对以下信息，决定是否允许本次调用。</p>
+                      <div className="approval-detail">
+                        <div><span>工具</span><pre>{liveApproval.tool}</pre></div>
+                        <div><span>工具调用标识</span><pre>{liveApproval.callId}</pre></div>
+                        <div><span>工作区</span><pre>{liveApproval.workspace}</pre></div>
+                        <div><span>权限模式</span><pre>{liveApproval.permissionMode}</pre></div>
+                        <div><span>审批原因</span><pre>{liveApproval.reason || "策略要求审批"}</pre></div>
+                        <div><span>完整参数</span><pre>{JSON.stringify(liveApproval.arguments, null, 2)}</pre></div>
+                      </div><div className="approval-note">批准只适用于这次调用，执行结果稍后显示。</div>
+                      <div className="approval-actions"><button disabled={approvalSubmitting} onClick={() => void decideLiveApproval(liveApproval, false)}>拒绝</button>
+                        <button className="approval-allow" disabled={approvalSubmitting} onClick={() => void decideLiveApproval(liveApproval, true)}>允许一次</button></div>
+                    </div></div>}
+                  {active.id === liveReasoning?.sessionId && <div className="live-reasoning">{liveReasoning.steps.map((step, index) => step.kind === "reasoning" && step.text ? <details className="reasoning-row" key={index} open><summary>思考过程 <ChevronDown size={14} /></summary><div className="reasoning-content"><ReactMarkdown remarkPlugins={[remarkGfm]} skipHtml components={{ img: ({ alt }) => <span>{alt || "图片"}</span> }}>{step.text}</ReactMarkdown></div></details> : null)}<TurnProcess items={liveReasoning.steps.filter((step): step is Extract<LiveStep, { kind: "tool" }> => step.kind === "tool")} running={busy} />{liveReasoning.answer && <div className="message-bubble assistant"><ReactMarkdown remarkPlugins={[remarkGfm]} skipHtml components={{ a: ({ children, ...props }) => <a {...props} target="_blank" rel="noopener noreferrer">{children}</a>, img: ({ alt }) => <span>{alt || "图片"}</span>, table: ({ children }) => <div className="markdown-table-wrap"><table>{children}</table></div> }}>{liveReasoning.answer}</ReactMarkdown>{liveReasoning.answerInterrupted && <small className="answer-interrupted">回复未完成</small>}</div>}{busy && !liveReasoning.answer && <div className="thinking"><div className="message-avatar"><Sparkles size={14} /></div><span className="thinking-dots"><i /><i /><i /></span><span>{liveApproval?.localSessionId === active.id ? "等待审批" : "正在执行"}</span></div>}</div>}
                 </div>
               )}
             </div>

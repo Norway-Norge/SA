@@ -1,5 +1,8 @@
 """Local web API for the SecureAgent workbench."""
+"""web.py` 处理前端请求时，会调用 session_store.py、`workspaces.py` 等文件中的功能"""
 
+
+import asyncio
 import json
 import os
 import queue
@@ -25,7 +28,8 @@ from secureagent.security.observations import read_session
 from secureagent.security.email_evidence import email_evidence
 from secureagent.security.workspace import Workspace, WorkspaceError
 from secureagent.session_store import SessionStore, SessionStoreError, approval_outcome, display_tool_event, tool_process
-from secureagent.plugins.composition import create_dispatcher
+from secureagent.runtime.composition import create_dispatcher
+from secureagent.plugins.security.web_approval import WebApprovalRegistry, approval_delivery, install as install_web_approval
 from secureagent.tools.shell import sandbox_available
 from secureagent.workspaces import WorkspaceRegistry, choose_directory, workspace_storage
 from secureagent.skills import discover_skills
@@ -54,6 +58,17 @@ workspace_agents_lock = threading.RLock()
 picker_lock = threading.Lock()
 session_locks: dict[str, threading.Lock] = {}
 session_locks_guard = threading.Lock()
+web_approvals = WebApprovalRegistry()
+
+
+def ensure_web_approval(current_agent):
+    """Install once per real workspace runtime; the delivery is request-local."""
+    if not isinstance(current_agent, Agent) or not hasattr(current_agent.dispatcher, "plugins"):
+        return
+    with workspace_agents_lock:
+        plugins = current_agent.dispatcher.plugins
+        if "web-pre-execute-approval" not in plugins.names():
+            plugins.register_tool("web-pre-execute-approval", install_web_approval, dependencies=("tools",))
 
 
 @contextmanager
@@ -540,6 +555,17 @@ def chat(request: ChatRequest) -> dict[str, Any]:
     return _run_chat(request)
 
 
+@app.post("/api/tool-approvals/{approval_id}")
+def decide_tool_approval(approval_id: str, request: EditDecisionRequest):
+    # Do not take the session operation lock: the waiting call already holds it.
+    session_id = session_store.normalize_id(request.session_id)
+    if session_id is None or len(approval_id) > 100:
+        raise HTTPException(status_code=400, detail="审批或会话标识无效。")
+    if not web_approvals.decide(approval_id, session_id, request.approve):
+        raise HTTPException(status_code=404, detail="审批不存在、已处理、已过期或不属于当前会话。")
+    return {"status": "SUBMITTED", "message": "决定已提交，等待工具执行结果。"}
+
+
 @app.post("/api/chat/stream")
 def chat_stream(request: ChatRequest) -> StreamingResponse:
     events: queue.Queue[dict[str, Any]] = queue.Queue()
@@ -554,6 +580,8 @@ def chat_stream(request: ChatRequest) -> StreamingResponse:
     def send(event: dict[str, Any]) -> None:
         if not disconnected.is_set():
             events.put(event)
+
+    delivery = web_approvals.open(send)
 
     def emit(kind: str, text: str) -> None:
         nonlocal redactor, buffered_answer
@@ -604,7 +632,7 @@ def chat_stream(request: ChatRequest) -> StreamingResponse:
 
     def run() -> None:
         try:
-            with reasoning_events(emit), tool_events(lambda kind, data: send({"type": "tool_" + kind, **data})), test_source_events(sources.append):
+            with approval_delivery(delivery), reasoning_events(emit), tool_events(lambda kind, data: send({"type": "tool_" + kind, **data})), test_source_events(sources.append):
                 result = _run_chat(request, sections, context_usage)
             send({"type": "final", **result})
         except HTTPException as exc:
@@ -612,18 +640,25 @@ def chat_stream(request: ChatRequest) -> StreamingResponse:
         except Exception:
             send({"type": "error", "message": "请求失败，可能已执行部分工具，请先检查执行状态。"})
         finally:
+            delivery.close()
             send({"type": "done"})
 
-    def generate():
+    async def generate():
         threading.Thread(target=run, daemon=True).start()
         try:
             while True:
-                event = events.get()
+                try:
+                    event = events.get_nowait()
+                except queue.Empty:
+                    # An async wait can be cancelled immediately on disconnect.
+                    await asyncio.sleep(0.1)
+                    continue
                 if event["type"] == "done":
                     break
                 yield "data: " + json.dumps(event, ensure_ascii=False) + "\n\n"
         finally:
             disconnected.set()
+            delivery.close()
 
     return StreamingResponse(generate(), media_type="text/event-stream", headers={"Cache-Control": "no-cache", "X-Accel-Buffering": "no"})
 
@@ -652,6 +687,7 @@ def _run_chat_inner(request: ChatRequest, reasoning: list[str] | None = None, co
     except SessionStoreError as exc:
         raise HTTPException(status_code=500, detail=str(exc)) from exc
     current_agent = selected_agent(identity)
+    ensure_web_approval(current_agent)
     if not session_id:
         session_id = str(uuid.uuid4())
     old_length = len(history)

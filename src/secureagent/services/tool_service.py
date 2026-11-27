@@ -45,6 +45,10 @@ class ToolRegistryService(Service):
     def check_guards(self, invocation):
         return self._guards.check(invocation)
 
+    @property
+    def guard_revision(self):
+        return self._guards.revision
+
     def post_execute_event_changed(self):
         self._post_execute.event_changed()
 

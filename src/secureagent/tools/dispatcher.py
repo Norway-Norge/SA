@@ -11,6 +11,7 @@ from secureagent.security.pre_execute import DecisionKind, ToolInvocation, freez
 from secureagent.tools.glob import validate_glob_pattern
 from secureagent.tools.file_service import LocalFileSystem
 from secureagent.tools.registry import ToolDefinition, ToolRegistry
+from secureagent.runtime.tool_result_event import emit_result
 
 log = logging.getLogger("secureagent.audit")
 FILESYSTEM_BOUND_TOOLS = frozenset({"read_file", "create_file", "write_file", "edit_file",
@@ -24,7 +25,7 @@ class Dispatcher:
                  runtime=None):
         if runtime is None:
             # Compatibility for existing callers; application entry points compose explicitly.
-            from secureagent.plugins.composition import RuntimeComposition
+            from secureagent.runtime.composition import RuntimeComposition
             runtime = RuntimeComposition(policy, sandbox_image, registry=registry, cache_dir=cache_dir)
         elif runtime.policy is not policy or sandbox_image is not None or registry is not None or cache_dir is not None:
             raise ValueError("注入的运行时与 Dispatcher 参数不一致")
@@ -57,6 +58,9 @@ class Dispatcher:
     def tool_snapshot(self) -> dict[str, ToolDefinition]:
         return self.registry.snapshot()
 
+    def emit_tool_result(self, call: dict, message: dict) -> None:
+        emit_result(self.plugin_runtime.context, self.policy, call, message)
+
     def skill_catalog(self) -> dict:
         return self.skills.list()
 
@@ -68,7 +72,8 @@ class Dispatcher:
         except WorkspaceError:
             return {"error": "文件系统 provider 不可用", "code": "FS_PROVIDER_UNAVAILABLE"}
 
-    def execute(self, call: dict, *, expected: ToolDefinition | None = None, check_expected: bool = False) -> dict:
+    def execute(self, call: dict, *, expected: ToolDefinition | None = None, check_expected: bool = False,
+                defer_result_event: bool = False) -> dict:
         """Finalize every tool result before it reaches spill, logs, or the model."""
         call_id = call.get("id", "")
         function = call.get("function") or {}
@@ -96,8 +101,11 @@ class Dispatcher:
             except Exception:
                 self.observations.invalidate_all()
         result = final_result
-        return {"role": "tool", "tool_call_id": call_id,
-                "content": json.dumps(result, ensure_ascii=False)}
+        message = {"role": "tool", "tool_call_id": call_id,
+                   "content": json.dumps(result, ensure_ascii=False)}
+        if not defer_result_event:
+            self.emit_tool_result(call, message)
+        return message
 
     def _execute(self, call: dict, *, expected: ToolDefinition | None = None, check_expected: bool = False) -> dict:
         call_id = call.get("id", "")
@@ -140,7 +148,10 @@ class Dispatcher:
                 validate_glob_pattern(args["pattern"])
             if name == "run_tests" and args["runner"] not in {"pytest", "unittest"}:
                 raise ValueError("测试类型无效")
-            policy_snapshot = self.policy.resolve()
+            policy_owner = self.policy
+            policy_snapshot = policy_owner.resolve()
+            policy_revision = policy_owner.revision
+            guard_revision = self.registry.guard_revision
             invocation = ToolInvocation(
                 name=name, arguments=freeze(args), tool_call_id=str(call_id),
                 session_id=policy_snapshot.session_id, workspace=str(policy_snapshot.workspace_root),
@@ -154,6 +165,9 @@ class Dispatcher:
             # A policy or approval must not authorize a removed or replaced tool.
             if self.registry.get(name) is not tool:
                 raise ValueError("工具注册已变化")
+            if (self.policy is not policy_owner or policy_owner.resolve() != policy_snapshot
+                    or policy_owner.revision != policy_revision or self.registry.guard_revision != guard_revision):
+                raise ValueError("权限策略已变化，请重新发起调用")
             allowed, reason = self.registry.check_guards(invocation)
             log.info("call_id=%r tool=%r decision=%s", str(call_id)[:100], str(name)[:100],
                      "ALLOW" if allowed else "DENY")

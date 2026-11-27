@@ -18,29 +18,29 @@ from secureagent.plugins.tools import (read_file, search_files, glob, create_fil
     safe_delete, list_recycle_bin, restore_file, convert_file, read_spill, skill, web_search, web_fetch,
     run_tests, run_inline_tests)
 from secureagent.tools.safe_delete import SafeDeleteOperations
-from secureagent.plugins.runtime import TrustedPluginRuntime
-from secureagent.plugins.filesystem_service import FileSystemService
-from secureagent.plugins.filesystem_composition import FileSystemComposition
-from secureagent.plugins.registry import PluginService
-from secureagent.plugins.turn_events import TurnEventService
-from secureagent.plugins.persona_service import PersonaService
-from secureagent.plugins.system_prompt_service import SystemPromptService
-from secureagent.plugins.web_service import WebService
-from secureagent.plugins.skill_service import SkillService
-from secureagent.plugins.spill_service import SpillService
-from secureagent.plugins.test_runner_service import TestRunnerService
-from secureagent.plugins.file_search_service import FileSearchService
-from secureagent.plugins.recycle_service import RecycleService
-from secureagent.plugins.mcp_manager_service import McpManagerService
-from secureagent.plugins.security_service import SecurityService
+from secureagent.plugin_runtime.runtime import TrustedPluginRuntime
+from secureagent.services.filesystem_service import FileSystemService
+from secureagent.runtime.filesystem_composition import FileSystemComposition
+from secureagent.plugin_runtime.registry import PluginService
+from secureagent.services.turn_events import TurnEventService
+from secureagent.services.persona_service import PersonaService
+from secureagent.services.system_prompt_service import SystemPromptService
+from secureagent.services.web_service import WebService
+from secureagent.services.skill_service import SkillService
+from secureagent.services.spill_service import SpillService
+from secureagent.services.test_runner_service import TestRunnerService
+from secureagent.services.file_search_service import FileSearchService
+from secureagent.services.recycle_service import RecycleService
+from secureagent.services.mcp_manager_service import McpManagerService
+from secureagent.services.security_service import SecurityService
 from secureagent.plugins.security import tool_authorization, recycle_authorization, email_authorization, output_redaction
-from secureagent.plugins import mcp_client
+from secureagent.plugins.mcp import client as mcp_client
 from secureagent.plugins.tools import send_email, check_email_operation
 from secureagent.tools.email_mcp import EmailMcpClient
 from secureagent.security.email_operations import EmailOperationStore
 from secureagent.workspaces import workspace_storage
 from secureagent.plugins.providers import deepseek_search, deepseek_fetch, local_skills, local_spill, local_filesystem, local_file_search, local_recycle, docker_tests
-from secureagent.plugins.bootstrap import install_default_plugins
+from secureagent.runtime.bootstrap import install_default_plugins
 
 
 

@@ -126,15 +126,23 @@ class Agent:
                 else:
                     snapshot = state.get("tool_snapshot")
                     if snapshot is None:
-                        result = self.dispatcher.execute(call)
+                        if hasattr(self.dispatcher, "emit_tool_result"):
+                            result = self.dispatcher.execute(call, defer_result_event=True)
+                        else:
+                            result = self.dispatcher.execute(call)
                     else:
-                        result = self.dispatcher.execute(call, expected=snapshot.get(function.get("name", "")),
-                                                         check_expected=True)
+                        options = {"expected": snapshot.get(function.get("name", "")), "check_expected": True}
+                        if hasattr(self.dispatcher, "emit_tool_result"):
+                            options["defer_result_event"] = True
+                        result = self.dispatcher.execute(call, **options)
                     count += 1
                     if hasattr(self.dispatcher, "spills"):
                         result = self.dispatcher.spills.retain(function.get("name", ""), result)
             except Exception:
                 unknown = {"tool_call_id": call.get("id", ""), "status": "UNKNOWN"}
+                if hasattr(self.dispatcher, "emit_tool_result"):
+                    self.dispatcher.emit_tool_result(call, {"role": "tool", "tool_call_id": call.get("id", ""),
+                        "content": json.dumps({"status": "UNKNOWN", "error": "工具结果未知"}, ensure_ascii=False)})
                 journal_event("tool/result", {"step": state.get("steps", 1), **unknown})
                 if observers is not None:
                     for output in observers.tool_result(call, unknown):
@@ -142,6 +150,8 @@ class Agent:
                 if sink:
                     sink("result", {**event, "status": "UNKNOWN"})
                 raise
+            if hasattr(self.dispatcher, "emit_tool_result"):
+                self.dispatcher.emit_tool_result(call, result)
             journal_event("tool/result", {"step": state.get("steps", 1), "message": result})
             if observers is not None:
                 for output in observers.tool_result(call, result):

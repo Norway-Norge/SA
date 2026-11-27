@@ -8,6 +8,7 @@ class ToolGuards:
         self._lock = RLock()
         self._authorizer = None
         self._guards = []
+        self._revision = 0
 
     def register_authorizer(self, guard):
         if not callable(guard):
@@ -17,10 +18,12 @@ class ToolGuards:
             if self._authorizer is not None:
                 raise ValueError("强制授权检查已注册")
             self._authorizer = entry
+            self._revision += 1
         def dispose():
             with self._lock:
                 if self._authorizer is entry:
                     self._authorizer = None
+                    self._revision += 1
         return dispose
 
     def register(self, guard):
@@ -29,11 +32,18 @@ class ToolGuards:
         entry = (object(), guard)
         with self._lock:
             self._guards.append(entry)
+            self._revision += 1
         def dispose():
             with self._lock:
                 if entry in self._guards:
                     self._guards.remove(entry)
+                    self._revision += 1
         return dispose
+
+    @property
+    def revision(self):
+        with self._lock:
+            return self._revision
 
     def check(self, call):
         with self._lock:

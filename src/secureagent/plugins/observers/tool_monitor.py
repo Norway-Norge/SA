@@ -3,7 +3,7 @@
 import hashlib
 import json
 from threading import Event
-from secureagent.plugins.turn_events import ToolEventOutput
+from secureagent.services.turn_events import ToolEventOutput
 
 
 def install(scope, ctx):

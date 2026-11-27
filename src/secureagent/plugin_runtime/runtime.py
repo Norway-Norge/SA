@@ -5,7 +5,7 @@ import inspect
 from threading import Condition, RLock, Thread, get_ident
 
 from cordis_py import Context, FiberState
-from secureagent.plugins.tool_service import ToolRegistryService
+from secureagent.services.tool_service import ToolRegistryService
 
 
 def _run_sync_lifecycle(operation):
@@ -117,6 +117,24 @@ class PluginRegistration:
         """Bind Cordis listeners to this plugin and protect active policy calls."""
         if not callable(handler):
             raise TypeError("监听函数必须可调用")
+        if event == "tools/result":
+            if inspect.iscoroutinefunction(handler) or inspect.iscoroutinefunction(getattr(handler, "__call__", None)):
+                raise TypeError("tools/result 当前只支持同步监听函数")
+
+            def observe(*args):
+                result = handler(*args)
+                if inspect.isawaitable(result):
+                    close = getattr(result, "close", None)
+                    if callable(close):
+                        close()
+                    raise TypeError("tools/result 当前只支持同步监听函数")
+
+            with self._condition:
+                if self._closing:
+                    raise RuntimeError("插件正在卸载")
+                undo = ctx.on(event, self.guard(observe), prepend=prepend, global_=global_)
+                self._event_disposers.append(undo)
+                return undo
         if event not in {"tools/pre-execute", "tools/post-execute"}:
             return ctx.on(event, handler, prepend=prepend, global_=global_)
 

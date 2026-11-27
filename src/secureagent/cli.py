@@ -16,7 +16,8 @@ from secureagent.agent.model import ChatModel
 from secureagent.security.policy import Policy
 from secureagent.security.observations import read_session
 from secureagent.security.workspace import Workspace, WorkspaceError
-from secureagent.plugins.composition import create_dispatcher
+from secureagent.runtime.composition import create_dispatcher
+from secureagent.plugins.security import cli_approval
 from secureagent.tools.shell import sandbox_available
 
 
@@ -53,6 +54,10 @@ def main(argv: list[str] | None = None) -> int:
     agent = Agent(model, create_dispatcher(policy, image))
     history = None
     session_id = str(uuid.uuid4())
+    if args.prompt is None:
+        # Only the interactive CLI owns this session's one-shot approvals.
+        agent.dispatcher.plugins.register_tool("cli-pre-execute-approval",
+            cli_approval.installer(session_id), dependencies=("tools",))
     print(f"已授权工作区：{workspace.root}", file=sys.stderr)
     print("读取的工作区内容会发送给配置的模型服务。", file=sys.stderr)
     if not image:

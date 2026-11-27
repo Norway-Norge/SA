@@ -1,6 +1,6 @@
 """Discover local skill metadata without loading it into the model."""
 
-
+"""查询本地skill"""
 
 
 import os

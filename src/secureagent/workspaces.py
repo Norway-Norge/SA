@@ -1,4 +1,5 @@
 """User-selected local workspaces and their private SA storage directories."""
+"""定位工作区"""
 
 import json
 import os

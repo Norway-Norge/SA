@@ -27,6 +27,7 @@ class Policy:
         self.workspace = workspace
         self._mode = mode
         self._lock = RLock()
+        self._revision = 0
         self._write_tools = set(HOST_WRITE_TOOLS)
         self._rule_owners: dict[str, object] = {}
         self._rules: dict[str, Callable[[dict], object]] = {
@@ -55,6 +56,7 @@ class Policy:
                 raise ValueError("授权规则名称无效或已存在")
             self._rules[name] = check
             self._rule_owners[name] = owner
+            self._revision += 1
             if writes:
                 self._write_tools.add(name)
 
@@ -63,10 +65,16 @@ class Policy:
                 if self._rule_owners.get(name) is owner:
                     del self._rules[name]
                     del self._rule_owners[name]
+                    self._revision += 1
                     if writes:
                         self._write_tools.discard(name)
 
         return dispose
+
+    @property
+    def revision(self):
+        with self._lock:
+            return self._revision
 
     def resolve(self) -> SandboxExecutionPolicy:
         """Resolve a trusted per-call snapshot; model arguments cannot change it."""
