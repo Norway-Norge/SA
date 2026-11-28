@@ -37,7 +37,7 @@ npm ci
 npm run dev
 ```
 
-本地 API 默认不提供用户认证，请勿暴露给不受信任的网络。
+前端默认地址为 `http://127.0.0.1:5500/`，端口被占用时以终端输出为准。本地 API 默认不提供用户认证，请勿暴露给不受信任的网络。
 
 ## 测试
 
@@ -52,10 +52,11 @@ uv run python -m unittest discover -s tests -v
 ```mermaid
 flowchart TD
     User[用户] --> UI[CLI / Web]
-    UI --> Agent[LangGraph Agent]
+    UI --> Agent[LangGraph Agent 循环]
     Agent --> Model[模型 API]
-    Agent --> Dispatcher[工具调度与安全检查]
-    Dispatcher --> Services[Cordis 服务与 Provider]
+    Agent --> Dispatcher[Dispatcher]
+    Dispatcher --> Plugins[工具与安全插件]
+    Plugins --> Services[Cordis 服务 / Provider]
     Agent --> Session[本地会话记录]
 ```
 
@@ -63,14 +64,18 @@ flowchart TD
 
 ```mermaid
 flowchart TD
-    Registry[工具注册表] --> Schema[工具 Schema]
-    Schema --> Model[模型]
-    Model --> Call[工具调用请求]
-    Call --> Check[参数校验与权限检查]
-    Check -->|允许| Execute[工具执行 / Provider]
-    Check -->|拒绝或审批| Result[执行结果]
-    Execute --> Result
+    Registry[工具注册表] --> Schema[Schema 快照]
+    Schema --> Model[模型生成工具调用]
+    Model --> Validate[Dispatcher 参数与注册校验]
+    Validate --> Pre[前置策略与可选审批]
+    Pre -->|允许| Guard[授权与 Guard 检查]
+    Guard -->|允许| Execute[tools/execute 与工具执行]
+    Execute --> Post[后置策略与输出处理]
+    Validate -->|失败| Post
+    Pre -->|拒绝或取消| Post
+    Guard -->|拒绝| Post
+    Post --> Result[工具消息与结果事件]
     Result --> Model
 ```
 
-模型提出工具调用，执行端负责授权；需要审批的操作由用户确认。已接入 MCP 客户端；RAG 和跨系统幂等恢复尚未完整实现。
+模型通过 Schema 提出调用；Dispatcher 执行校验、前置策略、审批及 Guard 检查，工具执行后再处理结果。Agent 可对大型结果进行 Spill，并广播 `tools/result`；直接调用 Dispatcher 时结果事件在后置处理后发送。部分工具还有独立审批。SA 已接入 stdio MCP 客户端；RAG 和跨系统通用幂等恢复尚未完整实现。
