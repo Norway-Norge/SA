@@ -171,6 +171,8 @@ class Dispatcher:
                     raise ValueError("提升权限需要说明原因")
             reason = (f"请求本次操作从 {policy_snapshot.mode} 升级到 {requested_mode}：{justification.strip()}"
                       if upgraded else None)
+            if name == "pwsh":
+                reason = "PowerShell 将以 SA 宿主进程权限执行；当前文件工具的权限模式不限制该进程。请审查本次命令。"
             decision = self.registry.pre_execute(invocation, required_approval=reason)
             if decision.kind != DecisionKind.ALLOW:
                 result = {"error": decision.reason or ("工具调用已取消" if decision.kind == DecisionKind.CANCEL else "前置策略拒绝"),

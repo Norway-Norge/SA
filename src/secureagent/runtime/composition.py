@@ -48,6 +48,9 @@ from secureagent.plugins.providers.spill import local_spill
 from secureagent.plugins.providers.filesystem import local_filesystem, local_file_search, local_recycle
 from secureagent.plugins.providers.testing import docker_tests
 from secureagent.runtime.bootstrap import install_default_plugins
+from secureagent.capabilities.shell.shell_service import ShellService
+from secureagent.plugins.providers.shell import local_pwsh
+from secureagent.plugins.tools.shell import pwsh
 
 
 
@@ -75,6 +78,7 @@ class RuntimeComposition:
         self.skills = SkillService(self.plugin_runtime.context)
         self.spills = SpillService(self.plugin_runtime.context)
         self.test_runner = TestRunnerService(self.plugin_runtime.context)
+        self.shell = ShellService(self.plugin_runtime.context)
         self.file_search = FileSearchService(self.plugin_runtime.context)
         self.recycle = RecycleService(self.plugin_runtime.context)
         self.mcp_manager = McpManagerService(self.plugin_runtime.context)
@@ -97,6 +101,11 @@ class RuntimeComposition:
             self.policy, self.observations, self.edit_approvals, approval_id, approve)
         # 自定义注册表由调用方管理；默认路径装配内置 Provider 和工具。
         if registry is None:
+            # Windows 本机 provider 不具备沙箱能力；每次工具调用要求审批。
+            pwsh_executable = local_pwsh.resolve_powershell()
+            if pwsh_executable:
+                self.plugins.register_tool("shell-provider-pwsh-local", local_pwsh.installer(pwsh_executable, policy.workspace.root, self._invalidate_filesystem_state), dependencies=("shell",))
+                self.plugins.register_tool("pwsh", pwsh.install, dependencies=("shell", "tools", "systemPrompt"))
             self.plugins.register_tool("spill-provider-local", local_spill.installer(policy.workspace), dependencies=("spillStore",))
             self.plugins.register_tool("read-spill", read_spill.install, dependencies=("spillStore", "systemPrompt"))
             self.plugins.register_tool("skills-provider-local", local_skills.installer(policy.workspace), dependencies=("skills",))

@@ -288,6 +288,9 @@ def health() -> dict[str, Any]:
                       and (os.environ.get("SA_WORKSPACE") or workspace_registry.list())
                       and os.environ.get("SA_SANDBOX_MODE", "workspace-write") in SANDBOX_MODES)
     tools = ["skill", "read_spill", "read_file", "search_files", "glob", "create_file", "write_file", "edit_file", "safe_delete", "list_recycle_bin", "restore_file", "convert_file"]
+    from secureagent.plugins.providers.shell.local_pwsh import resolve_powershell
+    if resolve_powershell():
+        tools.append("pwsh")
     from secureagent.capabilities.web.web_search import enabled as web_search_enabled
     if web_search_enabled():
         tools.append("web_search")
