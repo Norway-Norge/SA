@@ -4,6 +4,7 @@
 
 import asyncio
 import json
+import logging
 import os
 import queue
 import threading
@@ -30,11 +31,27 @@ from secureagent.security.workspace import Workspace, WorkspaceError
 from secureagent.session_store import SessionStore, SessionStoreError, approval_outcome, display_tool_event, tool_process
 from secureagent.runtime.composition import create_dispatcher
 from secureagent.plugins.security.web_approval import WebApprovalRegistry, approval_delivery, install as install_web_approval
-from secureagent.tools.shell import sandbox_available
+from secureagent.capabilities.testing.shell import sandbox_available
 from secureagent.workspaces import WorkspaceRegistry, choose_directory, workspace_storage
-from secureagent.skills import discover_skills
+from secureagent.capabilities.skills.discovery import discover_skills
 
 load_dotenv()
+
+log = logging.getLogger("secureagent.web")
+
+
+def _model_connection_diagnostic(exc):
+    """Return exception types and numeric error codes without URLs or credentials."""
+    details = []
+    seen = set()
+    current = exc
+    while current is not None and id(current) not in seen and len(details) < 6:
+        seen.add(id(current))
+        code = getattr(current, "errno", None)
+        details.append(f"{type(current).__name__}(errno={code})" if isinstance(code, int)
+                       else type(current).__name__)
+        current = current.__cause__ or current.__context__
+    return " -> ".join(details)
 
 @asynccontextmanager
 async def lifespan(_app: FastAPI):
@@ -271,10 +288,10 @@ def health() -> dict[str, Any]:
                       and (os.environ.get("SA_WORKSPACE") or workspace_registry.list())
                       and os.environ.get("SA_SANDBOX_MODE", "workspace-write") in SANDBOX_MODES)
     tools = ["skill", "read_spill", "read_file", "search_files", "glob", "create_file", "write_file", "edit_file", "safe_delete", "list_recycle_bin", "restore_file", "convert_file"]
-    from secureagent.tools.web_search import enabled as web_search_enabled
+    from secureagent.capabilities.web.web_search import enabled as web_search_enabled
     if web_search_enabled():
         tools.append("web_search")
-    from secureagent.tools.web_fetch import enabled as web_fetch_enabled
+    from secureagent.capabilities.web.web_fetch import enabled as web_fetch_enabled
     if web_fetch_enabled():
         tools.append("web_fetch")
     image = os.environ.get("SA_SANDBOX_IMAGE") or None
@@ -709,9 +726,11 @@ def _run_chat_inner(request: ChatRequest, reasoning: list[str] | None = None, co
         journal("turn/end", {"reason": "failed"})
         raise HTTPException(status_code=413, detail=str(exc)) from exc
     except APITimeoutError as exc:
+        log.warning("model request timed out: %s", _model_connection_diagnostic(exc))
         journal("turn/end", {"reason": "failed"})
         raise HTTPException(status_code=504, detail="模型服务请求超时。任务可能已执行部分工具，请先检查工作区和工具状态，再决定是否重试。") from exc
     except APIConnectionError as exc:
+        log.warning("model connection failed: %s", _model_connection_diagnostic(exc))
         journal("turn/end", {"reason": "failed"})
         raise HTTPException(status_code=502, detail="无法连接模型服务，请检查服务地址、网络及代理。任务可能已执行部分工具，请先检查工作区和工具状态，再决定是否重试。") from exc
     except Exception as exc:

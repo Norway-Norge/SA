@@ -879,6 +879,11 @@ function App() {
                         <div><span>工作区</span><pre>{liveApproval.workspace}</pre></div>
                         <div><span>权限模式</span><pre>{liveApproval.permissionMode}</pre></div>
                         <div><span>审批原因</span><pre>{liveApproval.reason || "策略要求审批"}</pre></div>
+                        {(["create_file", "write_file", "edit_file"].includes(liveApproval.tool)
+                          && typeof liveApproval.arguments.sandbox_permissions === "string"
+                          && typeof liveApproval.arguments.justification === "string"
+                          && liveApproval.arguments.justification.trim() !== "") &&
+                          <div><span>模型对写入内容的说明</span><pre>{liveApproval.arguments.justification}</pre></div>}
                         <div><span>完整参数</span><pre>{JSON.stringify(liveApproval.arguments, null, 2)}</pre></div>
                       </div><div className="approval-note">批准只适用于这次调用，执行结果稍后显示。</div>
                       <div className="approval-actions"><button disabled={approvalSubmitting} onClick={() => void decideLiveApproval(liveApproval, false)}>拒绝</button>

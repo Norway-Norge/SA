@@ -135,7 +135,7 @@ class PluginRegistration:
                 undo = ctx.on(event, self.guard(observe), prepend=prepend, global_=global_)
                 self._event_disposers.append(undo)
                 return undo
-        if event not in {"tools/pre-execute", "tools/post-execute"}:
+        if event not in {"tools/pre-execute", "tools/execute", "tools/post-execute"}:
             return ctx.on(event, handler, prepend=prepend, global_=global_)
 
         async def listener(*values):
@@ -150,7 +150,7 @@ class PluginRegistration:
             def next_once():
                 nonlocal called
                 if called:
-                    raise ValueError("前置策略不能重复调用 next")
+                    raise ValueError("事件监听器不能重复调用 next")
                 called = True
                 return next_hook()
             try:
@@ -169,8 +169,9 @@ class PluginRegistration:
                 raise RuntimeError("插件正在卸载")
             undo = ctx.on(event, listener, prepend=prepend, global_=global_)
             changed = (self.registry.pre_execute_event_changed if event == "tools/pre-execute"
-                       else self.registry.post_execute_event_changed)
-            changed()
+                       else self.registry.post_execute_event_changed if event == "tools/post-execute" else None)
+            if changed is not None:
+                changed()
             disposed = False
             def dispose():
                 nonlocal disposed
@@ -178,7 +179,8 @@ class PluginRegistration:
                     if not disposed:
                         disposed = True
                         undo()
-                        changed()
+                        if changed is not None:
+                            changed()
             self._event_disposers.append(dispose)
             return dispose
 

@@ -1,4 +1,5 @@
 """Bounded pattern-based output redaction for common credential formats."""
+"""输出脱敏"""
 
 import re
 

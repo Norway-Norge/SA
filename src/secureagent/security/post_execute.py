@@ -1,4 +1,4 @@
-"""Post-execution event decisions and required output safety finalization."""
+"""Post-execution event decisions and optional output finalization."""
 
 import json
 from dataclasses import dataclass
@@ -50,8 +50,6 @@ class PostExecutePolicies:
         with self._lock:
             revision, output_filter = self._revision, self._filter
         failure = {"status": "UNKNOWN", "error": "工具结果安全处理失败，执行状态可能未知；请先核对，不要自动重试。"}
-        if output_filter is None:
-            return failure
         try:
             # Round-trip to detach from mutable provider output and validate JSON.
             original = json.loads(json.dumps(result, ensure_ascii=False, allow_nan=False))
@@ -77,7 +75,7 @@ class PostExecutePolicies:
                 selected = {"status": "UNKNOWN", "error": "工具结果被安全策略阻止；操作可能已执行，请先核对，不要自动重试。"}
             else:
                 raise ValueError("后置策略决策无效")
-            safe = output_filter[1](invocation, selected)
+            safe = output_filter[1](invocation, selected) if output_filter is not None else selected
             safe = json.loads(json.dumps(safe, ensure_ascii=False, allow_nan=False))
             if not isinstance(safe, dict):
                 raise ValueError("输出安全处理器返回无效结果")

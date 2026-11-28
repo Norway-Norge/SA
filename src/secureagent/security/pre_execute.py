@@ -111,7 +111,7 @@ class PreExecutePolicies:
         with self._lock:
             self._revision += 1
 
-    def evaluate(self, invocation, ctx):
+    def evaluate(self, invocation, ctx, *, required_approval=None):
         with self._lock:
             hooks, approval, revision = tuple(self._hooks), self._approval, self._revision
 
@@ -143,6 +143,10 @@ class PreExecutePolicies:
             decision = run_coroutine_sync(waterfall)
             if not isinstance(decision, PreExecuteDecision):
                 raise ValueError("前置策略返回无效决策")
+            if decision.kind == DecisionKind.ALLOW and required_approval is not None:
+                decision = PreExecuteDecision(DecisionKind.ASK, required_approval)
+            elif decision.kind == DecisionKind.ASK and required_approval is not None:
+                decision = PreExecuteDecision(DecisionKind.ASK, required_approval + "；" + decision.reason)
             if decision.kind == DecisionKind.ASK:
                 if approval is None or invocation.session_id is None:
                     return PreExecuteDecision(DecisionKind.DENY, "通用审批不可用，工具调用已拒绝")

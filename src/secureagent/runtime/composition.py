@@ -9,37 +9,44 @@ from cordis_py import Context
 from secureagent.security.policy import Policy
 from secureagent.security.observations import ObservationStore
 from secureagent.security.edit_approvals import EditApprovals
-from secureagent.tools.edit_file import decide_edit
+from secureagent.capabilities.filesystem.edit_file import decide_edit
 from secureagent.tools.registry import ToolRegistry
-from secureagent.tools.web_search import enabled as web_search_enabled
-from secureagent.tools.web_fetch import enabled as web_fetch_enabled
-from secureagent.tools.shell import StatefulTestSandboxes
-from secureagent.plugins.tools import (read_file, search_files, glob, create_file, write_file, edit_file,
-    safe_delete, list_recycle_bin, restore_file, convert_file, read_spill, skill, web_search, web_fetch,
-    run_tests, run_inline_tests)
-from secureagent.tools.safe_delete import SafeDeleteOperations
+from secureagent.capabilities.web.web_search import enabled as web_search_enabled
+from secureagent.capabilities.web.web_fetch import enabled as web_fetch_enabled
+from secureagent.capabilities.testing.shell import StatefulTestSandboxes
+from secureagent.plugins.tools.filesystem import (read_file, search_files, glob, create_file, write_file,
+    edit_file, safe_delete, list_recycle_bin, restore_file, convert_file)
+from secureagent.plugins.tools.spill import read_spill
+from secureagent.plugins.tools.skills import skill
+from secureagent.plugins.tools.web import web_search, web_fetch
+from secureagent.plugins.tools.testing import run_tests, run_inline_tests
+from secureagent.capabilities.filesystem.safe_delete import SafeDeleteOperations
 from secureagent.plugin_runtime.runtime import TrustedPluginRuntime
-from secureagent.services.filesystem_service import FileSystemService
+from secureagent.capabilities.filesystem.filesystem_service import FileSystemService
 from secureagent.runtime.filesystem_composition import FileSystemComposition
 from secureagent.plugin_runtime.registry import PluginService
 from secureagent.services.turn_events import TurnEventService
 from secureagent.services.persona_service import PersonaService
 from secureagent.services.system_prompt_service import SystemPromptService
-from secureagent.services.web_service import WebService
-from secureagent.services.skill_service import SkillService
-from secureagent.services.spill_service import SpillService
-from secureagent.services.test_runner_service import TestRunnerService
-from secureagent.services.file_search_service import FileSearchService
-from secureagent.services.recycle_service import RecycleService
-from secureagent.services.mcp_manager_service import McpManagerService
+from secureagent.capabilities.web.web_service import WebService
+from secureagent.capabilities.skills.skill_service import SkillService
+from secureagent.capabilities.spill.spill_service import SpillService
+from secureagent.capabilities.testing.test_runner_service import TestRunnerService
+from secureagent.capabilities.filesystem.file_search_service import FileSearchService
+from secureagent.capabilities.filesystem.recycle_service import RecycleService
+from secureagent.capabilities.mcp.mcp_manager_service import McpManagerService
 from secureagent.services.security_service import SecurityService
 from secureagent.plugins.security import tool_authorization, recycle_authorization, email_authorization, output_redaction
 from secureagent.plugins.mcp import client as mcp_client
-from secureagent.plugins.tools import send_email, check_email_operation
-from secureagent.tools.email_mcp import EmailMcpClient
+from secureagent.plugins.tools.email import send_email, check_email_operation
+from secureagent.capabilities.mcp.email_mcp import EmailMcpClient
 from secureagent.security.email_operations import EmailOperationStore
 from secureagent.workspaces import workspace_storage
-from secureagent.plugins.providers import deepseek_search, deepseek_fetch, local_skills, local_spill, local_filesystem, local_file_search, local_recycle, docker_tests
+from secureagent.plugins.providers.web import deepseek_search, deepseek_fetch
+from secureagent.plugins.providers.skills import local_skills
+from secureagent.plugins.providers.spill import local_spill
+from secureagent.plugins.providers.filesystem import local_filesystem, local_file_search, local_recycle
+from secureagent.plugins.providers.testing import docker_tests
 from secureagent.runtime.bootstrap import install_default_plugins
 
 
@@ -79,7 +86,9 @@ class RuntimeComposition:
         self.plugins = PluginService(self.plugin_runtime)
         self.plugins.register_tool("tool-authorization", tool_authorization.install,
                                    dependencies=("tools", "security"))
-        self.plugins.register_tool("output-redaction", output_redaction.install, dependencies=("tools",))
+        # 宿主可选择不装配输出脱敏插件；默认保留现有行为。
+        if os.environ.get("SA_OUTPUT_REDACTION_ENABLED", "true").strip().lower() not in {"0", "false", "no", "off"}:
+            self.plugins.register_tool("output-redaction", output_redaction.install, dependencies=("tools",))
         # 显式安装默认提示词和工具监控插件。
         install_default_plugins(self.plugins)
         self.unload_safe_delete = None
@@ -94,7 +103,8 @@ class RuntimeComposition:
             self.plugins.register_tool("skill", skill.install, dependencies=("skills", "systemPrompt"))
             # 创建文件系统服务并通过可信插件配置安装当前 Provider。
             self.file_system_service = FileSystemService(self.plugin_runtime.context, policy.workspace,
-                                                         on_change=self._invalidate_filesystem_state)
+                                                         on_change=self._invalidate_filesystem_state,
+                                                         get_policy=lambda: self.policy)
             self.recycle.file_system = self.file_system_service
             self.filesystem_plugins = FileSystemComposition(self.plugins, self.file_system_service)
             self.filesystem_plugins.register_factory("fs-provider-local", local_filesystem.installer(policy.workspace))

@@ -8,8 +8,8 @@ from pathlib import Path
 from secureagent.security.policy import Policy
 from secureagent.security.workspace import WorkspaceError
 from secureagent.security.pre_execute import DecisionKind, ToolInvocation, freeze
-from secureagent.tools.glob import validate_glob_pattern
-from secureagent.tools.file_service import LocalFileSystem
+from secureagent.capabilities.filesystem.glob import validate_glob_pattern
+from secureagent.capabilities.filesystem.file_service import LocalFileSystem
 from secureagent.tools.registry import ToolDefinition, ToolRegistry
 from secureagent.runtime.tool_result_event import emit_result
 
@@ -156,7 +156,22 @@ class Dispatcher:
                 name=name, arguments=freeze(args), tool_call_id=str(call_id),
                 session_id=policy_snapshot.session_id, workspace=str(policy_snapshot.workspace_root),
                 permission_mode=policy_snapshot.mode)
-            decision = self.registry.pre_execute(invocation)
+            requested_mode = args.get("sandbox_permissions") if name in {"create_file", "write_file", "edit_file"} else None
+            justification = args.get("justification", "") if name in {"create_file", "write_file", "edit_file"} else ""
+            ranks = {"read-only": 0, "workspace-write": 1, "danger-full-access": 2}
+            if requested_mode is None:
+                if justification.strip():
+                    raise ValueError("权限说明需要同时指定权限模式")
+                upgraded = False
+            else:
+                if requested_mode not in ranks or ranks[requested_mode] < ranks[policy_snapshot.mode]:
+                    raise ValueError("请求的权限模式无效或低于当前模式")
+                upgraded = ranks[requested_mode] > ranks[policy_snapshot.mode]
+                if upgraded and not justification.strip():
+                    raise ValueError("提升权限需要说明原因")
+            reason = (f"请求本次操作从 {policy_snapshot.mode} 升级到 {requested_mode}：{justification.strip()}"
+                      if upgraded else None)
+            decision = self.registry.pre_execute(invocation, required_approval=reason)
             if decision.kind != DecisionKind.ALLOW:
                 result = {"error": decision.reason or ("工具调用已取消" if decision.kind == DecisionKind.CANCEL else "前置策略拒绝"),
                           "code": "TOOL_CANCELLED" if decision.kind == DecisionKind.CANCEL else "TOOL_DENIED"}
@@ -168,17 +183,24 @@ class Dispatcher:
             if (self.policy is not policy_owner or policy_owner.resolve() != policy_snapshot
                     or policy_owner.revision != policy_revision or self.registry.guard_revision != guard_revision):
                 raise ValueError("权限策略已变化，请重新发起调用")
-            allowed, reason = self.registry.check_guards(invocation)
-            log.info("call_id=%r tool=%r decision=%s", str(call_id)[:100], str(name)[:100],
-                     "ALLOW" if allowed else "DENY")
-            if not allowed:
-                result = {"error": reason}
-            else:
-                fs = getattr(self, "file_system_service", None)
-                with fs.operation() if fs is not None and name in FILESYSTEM_BOUND_TOOLS else nullcontext() as backend:
-                    if name in RECYCLE_TOOLS and fs is not None and not isinstance(backend.provider, LocalFileSystem):
-                        raise WorkspaceError("当前文件系统 provider 不支持本地回收操作")
-                    result = tool.handler(args)
+            with policy_owner.call_mode(requested_mode) if upgraded else nullcontext():
+                allowed, reason = self.registry.check_guards(invocation)
+                log.info("call_id=%r tool=%r decision=%s", str(call_id)[:100], str(name)[:100],
+                         "ALLOW" if allowed else "DENY")
+                if not allowed:
+                    result = {"error": reason}
+                else:
+                    fs = getattr(self, "file_system_service", None)
+                    with fs.operation() if fs is not None and name in FILESYSTEM_BOUND_TOOLS else nullcontext() as backend:
+                        if name in RECYCLE_TOOLS and fs is not None and not isinstance(backend.provider, LocalFileSystem):
+                            raise WorkspaceError("当前文件系统 provider 不支持本地回收操作")
+                        active_snapshot = policy_owner.resolve()
+                        def still_authorized():
+                            return (self.registry.get(name) is tool and self.policy is policy_owner
+                                    and policy_owner.resolve() == active_snapshot
+                                    and policy_owner.revision == policy_revision
+                                    and self.registry.guard_revision == guard_revision)
+                        result = self.registry.execute(invocation, tool, args, still_authorized)
         except (ValueError, TypeError, OSError) as exc:
             log.info("call_id=%r tool=%r decision=DENY", str(call_id)[:100], str(name)[:100])
             result = {"error": "工具请求无效或执行失败", "detail": str(exc) if isinstance(exc, ValueError) else "操作失败"}

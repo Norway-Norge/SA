@@ -4,6 +4,7 @@ from cordis_py import Service
 from secureagent.security.pre_execute import PreExecutePolicies
 from secureagent.security.tool_guards import ToolGuards
 from secureagent.security.post_execute import PostExecutePolicies
+from secureagent.tools.execution import execute_tool
 
 
 class ToolRegistryService(Service):
@@ -31,8 +32,8 @@ class ToolRegistryService(Service):
     def register_pre_execute_approval(self, handler):
         return self._pre_execute.register_approval(handler)
 
-    def pre_execute(self, invocation):
-        return self._pre_execute.evaluate(invocation, self.ctx)
+    def pre_execute(self, invocation, *, required_approval=None):
+        return self._pre_execute.evaluate(invocation, self.ctx, required_approval=required_approval)
 
     def register_authorizer(self, guard):
         """Install the required authorization owner; its absence denies calls."""
@@ -44,6 +45,9 @@ class ToolRegistryService(Service):
 
     def check_guards(self, invocation):
         return self._guards.check(invocation)
+
+    def execute(self, invocation, tool, arguments, still_authorized):
+        return execute_tool(self.ctx, invocation, tool, arguments, still_authorized)
 
     @property
     def guard_revision(self):

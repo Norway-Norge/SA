@@ -4,16 +4,17 @@ from contextlib import contextmanager
 from threading import RLock
 
 from secureagent.security.workspace import Workspace, WorkspaceError
-from secureagent.tools.file_backend import MAX_CREATE_BYTES
-from secureagent.tools.file_service import FileSystem, FileTarget
+from secureagent.capabilities.filesystem.file_backend import MAX_CREATE_BYTES
+from secureagent.capabilities.filesystem.file_service import FileSystem, FileTarget
 
 
 class RestrictedFileSystem:
     """Enforce SA workspace rules before delegating to a filesystem provider."""
 
-    def __init__(self, workspace: Workspace, provider: FileSystem):
+    def __init__(self, workspace: Workspace, provider: FileSystem, *, get_policy=None):
         self.workspace = workspace
         self.provider = provider
+        self._get_policy = get_policy
         self._targets: dict[str, tuple[str, FileTarget]] = {}
         self._lock = RLock()
 
@@ -27,17 +28,25 @@ class RestrictedFileSystem:
             known = self._targets.get(target.key)
         if known is None or known[1] != target:
             raise WorkspaceError("文件目标未授权")
-        self.workspace.resolve(known[0])
+        self._resolve_write(known[0])
         if self.provider.resolve(known[0]) != target:
             raise WorkspaceError("文件目标已变化")
 
+    def _resolve_write(self, path):
+        if self._get_policy is not None:
+            policy = self._get_policy()
+            if policy.resolve().mode == "read-only":
+                raise WorkspaceError("只读模式不允许修改宿主文件")
+            if policy.resolve().mode == "danger-full-access":
+                return self.workspace.resolve_read(path)
+        return self.workspace.resolve(path)
+
     def resolve(self, path: str) -> FileTarget:
-        self.workspace.resolve(path)
+        self._resolve_write(path)
         return self._remember(path, self.provider.resolve(path))
 
     @contextmanager
     def open_read(self, path: str):
-        self.workspace.resolve(path)
         with self.provider.open_read(path) as stream:
             self._remember(path, stream.target)
             yield stream
@@ -45,7 +54,12 @@ class RestrictedFileSystem:
     def create_file(self, path: str, content: bytes) -> dict:
         if len(content) > MAX_CREATE_BYTES:
             return {"error": "文件内容超过大小限制"}
-        self.workspace.resolve_new_file(path, allow_missing_parents=True)
+        if self._get_policy is not None and self._get_policy().resolve().mode == "read-only":
+            raise WorkspaceError("只读模式不允许修改宿主文件")
+        if self._get_policy is not None and self._get_policy().resolve().mode == "danger-full-access":
+            self.workspace.resolve_new_file_unrestricted(path)
+        else:
+            self.workspace.resolve_new_file(path, allow_missing_parents=True)
         return self.provider.create_file(path, content)
 
     def current_version(self, target: FileTarget) -> object | None:
@@ -61,7 +75,7 @@ class RestrictedFileSystem:
                          content: bytes, kind: str, check=None) -> dict:
         if kind not in {"write", "edit"} or len(content) > MAX_CREATE_BYTES:
             raise ValueError("文件操作或内容无效")
-        self.workspace.resolve(path)
+        self._resolve_write(path)
         self._check_target(target)
         if self.provider.resolve(path) != target:
             raise WorkspaceError("文件目标已变化")
@@ -74,7 +88,7 @@ class RestrictedFileSystem:
 
         def check_before_commit():
             try:
-                self.workspace.resolve(path)
+                self._resolve_write(path)
                 self._check_target(target)
             except WorkspaceError:
                 return False, "资源不在授权工作区内或已发生变化"

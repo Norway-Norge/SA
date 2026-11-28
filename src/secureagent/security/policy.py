@@ -1,6 +1,8 @@
 """Trusted, single-user P0 authorization boundary."""
 
 from collections.abc import Callable
+from contextlib import contextmanager
+from contextvars import ContextVar
 from dataclasses import dataclass
 from pathlib import Path
 from threading import RLock
@@ -11,6 +13,7 @@ from .observations import current_session
 
 SANDBOX_MODES = frozenset({"read-only", "workspace-write", "danger-full-access"})
 HOST_WRITE_TOOLS = frozenset({"create_file", "write_file", "edit_file"})
+_CALL_MODE = ContextVar("sa_call_mode", default=None)
 
 
 @dataclass(frozen=True)
@@ -31,19 +34,29 @@ class Policy:
         self._write_tools = set(HOST_WRITE_TOOLS)
         self._rule_owners: dict[str, object] = {}
         self._rules: dict[str, Callable[[dict], object]] = {
-            "read_file": lambda args: self.workspace.resolve(args["path"]),
-            "search_files": lambda args: self.workspace.resolve(args["path"], directory=True),
+            "read_file": lambda args: self.workspace.resolve_read(args["path"]),
+            "search_files": lambda args: self.workspace.resolve_read(args["path"], directory=True),
             "web_search": lambda args: None,
             "web_fetch": lambda args: None,
             "skill": lambda args: None,
             "read_spill": lambda args: None,
-            "glob": lambda args: self.workspace.resolve(args.get("path", "."), directory=True),
+            "glob": lambda args: self.workspace.resolve_read(args.get("path", "."), directory=True),
             "run_tests": lambda args: self.workspace.resolve(args["path"], directory=True),
             "run_inline_tests": lambda args: None,
-            "create_file": lambda args: self.workspace.resolve_new_file(args["path"], allow_missing_parents=True),
-            "write_file": lambda args: self.workspace.resolve(args["path"]),
-            "edit_file": lambda args: self.workspace.resolve(args["path"]),
+            "create_file": lambda args: self._resolve_create(args["path"]),
+            "write_file": lambda args: self._resolve_write(args["path"]),
+            "edit_file": lambda args: self._resolve_write(args["path"]),
         }
+
+    def _resolve_create(self, path):
+        if self.resolve().mode == "danger-full-access":
+            return self.workspace.resolve_new_file_unrestricted(path)
+        return self.workspace.resolve_new_file(path, allow_missing_parents=True)
+
+    def _resolve_write(self, path):
+        if self.resolve().mode == "danger-full-access":
+            return self.workspace.resolve_read(path)
+        return self.workspace.resolve(path)
 
     def register_rule(self, name: str, check: Callable[[dict], object], *, writes: bool = False) -> Callable[[], None]:
         if not isinstance(name, str) or not name:
@@ -78,7 +91,19 @@ class Policy:
 
     def resolve(self) -> SandboxExecutionPolicy:
         """Resolve a trusted per-call snapshot; model arguments cannot change it."""
-        return SandboxExecutionPolicy(self._mode, self.workspace.root, current_session())
+        grant = _CALL_MODE.get()
+        mode = grant[1] if grant is not None and grant[0] is self else self._mode
+        return SandboxExecutionPolicy(mode, self.workspace.root, current_session())
+
+    @contextmanager
+    def call_mode(self, mode):
+        if mode not in SANDBOX_MODES:
+            raise ValueError("权限模式无效")
+        token = _CALL_MODE.set((self, mode))
+        try:
+            yield
+        finally:
+            _CALL_MODE.reset(token)
 
     def authorize(self, name: str, args: dict) -> tuple[bool, str]:
         execution_policy = self.resolve()
@@ -95,6 +120,18 @@ class Policy:
         except WorkspaceError as exc:
             if name == "create_file" and str(exc) == "目标已存在":
                 return False, "目标已存在；请先读取，然后使用 write_file 修改"
+            if (execution_policy.mode == "workspace-write" and name in HOST_WRITE_TOOLS
+                    and isinstance(args.get("path"), str)):
+                try:
+                    candidate = (self.workspace.root / Path(args["path"])).resolve(strict=False)
+                except (OSError, RuntimeError, ValueError):
+                    pass
+                else:
+                    try:
+                        candidate.relative_to(self.workspace.root)
+                    except ValueError:
+                        return False, ("目标位于工作区外；如用户要求修改，可使用同一工具并设置 "
+                                       "sandbox_permissions=danger-full-access 和 justification 请求本次审批。")
             return False, "资源不存在或不在授权工作区内"
         except KeyError:
             return False, "资源不存在或不在授权工作区内"

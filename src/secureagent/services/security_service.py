@@ -12,6 +12,9 @@ class SecurityService(Service):
     def authorize(self, name, args):
         return self._get_policy().authorize(name, args)
 
+    def register_entry_filter(self, callback):
+        return self._get_policy().workspace.register_entry_filter(callback)
+
     def reauthorize(self, name, args):
         """Recheck monotonic guards when a previously approved action commits."""
         policy = self._get_policy().resolve()

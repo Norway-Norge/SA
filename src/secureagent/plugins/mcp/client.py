@@ -1,6 +1,6 @@
 """Explicitly installed, lifecycle-bound generic stdio MCP client plugin."""
 
-from secureagent.tools.mcp_client import StdioMcpClient
+from secureagent.capabilities.mcp.mcp_client import StdioMcpClient
 
 
 def installer(name, command, args, *, env=None, timeout=45):

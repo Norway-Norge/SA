@@ -17,6 +17,9 @@ class PendingEdit:
     replace_all: bool
     observation: ReadObservation
     expires_at: float
+    policy: object | None = None
+    policy_revision: int = 0
+    effective_mode: str | None = None
 
 
 class EditApprovals:
@@ -27,7 +30,7 @@ class EditApprovals:
         self._results: dict[str, tuple[str, dict, float]] = {}
 
     def propose(self, path: str, old: str, new: str, replace_all: bool,
-                observation: ReadObservation) -> str | None:
+                observation: ReadObservation, *, policy=None) -> str | None:
         session = current_session()
         if not session:
             return None
@@ -39,7 +42,9 @@ class EditApprovals:
                 raise ValueError("待审批请求过多")
             approval_id = secrets.token_urlsafe(24)
             self._pending[approval_id] = PendingEdit(session, path, old, new, replace_all,
-                                                     observation, now + self._ttl)
+                                                     observation, now + self._ttl, policy,
+                                                     policy.revision if policy is not None else 0,
+                                                     policy.resolve().mode if policy is not None else None)
             return approval_id
 
     def invalidate_pending(self) -> None:

@@ -18,7 +18,7 @@ from secureagent.security.observations import read_session
 from secureagent.security.workspace import Workspace, WorkspaceError
 from secureagent.runtime.composition import create_dispatcher
 from secureagent.plugins.security import cli_approval
-from secureagent.tools.shell import sandbox_available
+from secureagent.capabilities.testing.shell import sandbox_available
 
 
 def main(argv: list[str] | None = None) -> int:

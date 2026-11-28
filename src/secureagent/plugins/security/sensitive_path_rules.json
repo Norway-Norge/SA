@@ -1,0 +1,7 @@
+{
+  "directories": [".aws", ".azure", ".config", ".direnv", ".docker", ".git", ".gnupg", ".kube", ".secureagent", ".ssh"],
+  "filenames": [".env", ".envrc", ".git-credentials", ".gitconfig", ".netrc", ".npmrc", ".pypirc", ".secrets", ".vault-token", "access_token", "auth.json", "credentials", "id_dsa", "id_ecdsa", "id_ed25519", "id_rsa", "pip.conf", "private.key", "private_key", "refresh_token", "secret", "secrets", "token", "credentials.json", "service-account.json", "service_account.json"],
+  "suffixes": [".env", ".jks", ".keystore", ".key", ".kdbx", ".pem", ".p12", ".pfx", ".tfstate", ".tfstate.backup"],
+  "name_prefixes": [".env.", ".env-", ".env_"],
+  "stem_suffixes": ["_credentials", "-credentials", ".credentials", "_secret", "-secret", ".secret", "_token", "-token", ".token"]
+}
